@@ -1,0 +1,24 @@
+This short guide assumes a fresh install of EndeavourOS which includes Steam as already installed and an iRacing account that is not already activated in any way on Steam.
+
+[It has been a while since I did a fresh install]
+Install protontricks
+    - $ yay -S protontricks
+
+Grab your Steam key here:
+
+https://support.iracing.com/support/solutions/articles/31000165400-how-to-generate-a-steam-key
+
+Install iRacing on Steam, note there are only three .bat files at the end of this.
+
+Download the iRacing installer and place into an easy to locate directory if needed.
+
+run
+    - protontricks-launch --appid 266410 [path to installer]
+
+Follow all the prompts, place the install location to where Steam installed iRacing
+    - usually in /home/$USER/.steam/steam/steamapps/common/iRacing
+    make sure to check there is no double /iRacing/iRacing/
+
+Once installed, for now select Proton Experimental as the Steam Play Compatibility tool - though GE-Proton9-5 does work.
+
+Click PLAY.
