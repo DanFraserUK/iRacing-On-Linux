@@ -1,0 +1,40 @@
+This short guide assumes a fresh install of Fedora Workstation 40 (with required gfx drivers) which includes Steam as already installed and an iRacing account that is not already activated in any way on Steam.
+
+If you have a modern Nvidia gfx card and the GNOME interface, you will need to be on the old X11 rendering engine not (default) Wayland. Not sure about KDE, I assume whatever X11 option exists there will work the same.
+    Log out of Fedora
+    Click on your username to log in
+    Click the cog/gear icon bottom right
+    Choose "GNOME on Xorg" e.g. see here https://docs.fedoraproject.org/ru/quick-docs/_images/configuring-xorg-as-default-gnome-session_2.png
+    Log in and proceed as normal
+
+Install protontricks
+    - sudo dnf install protontricks
+
+Grab your Steam key here:
+    https://support.iracing.com/support/solutions/articles/31000165400-how-to-generate-a-steam-key
+
+Install iRacing on Steam, note there are only three .bat files at the end of this.
+
+Download the iRacing installer and place into an easy to locate directory if needed.
+    https://members.iracing.com/download/member/noservice.jsp and click "Download iRacing Software"
+
+run
+    - protontricks-launch --appid 266410 [path to iRacing installer]
+
+Follow all the prompts, place the install location to where Steam installed iRacing
+    - usually in Z:/home/$USER/.steam/steam/steamapps/common/iRacing
+    make sure to check there is no double /iRacing/iRacing/
+
+Once installed, for now select Proton Experimental as the Steam Play Compatibility tool - though GE-Proton9-5 does work.
+
+Click PLAY in Steam.
+
+The iRacing login window may be too small to fit its content properly. In my case I could see and type into the top left corner of the email field.
+    So I typed/pasted my iRacing email address by clicking into the bit I could see
+    Pressed TAB key on my keyboard ONCE (this will focus the cursor onto the invisible password field)
+    Typed/pasted in my iRacing password
+    Pressed ENTER key on my keyboard ONCE
+
+It will now prompt for downloading the tracks and cards in properly sized windows.
+
+It may crash/exit after the download is complete. Start the game again from Steam.
