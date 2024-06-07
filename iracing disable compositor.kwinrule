@@ -1,0 +1,6 @@
+[iRacing must disable compositor]
+Description=iRacing must disable compositor
+blockcompositing=true
+blockcompositingrule=2
+wmclass=steam_app_266410
+wmclassmatch=1
