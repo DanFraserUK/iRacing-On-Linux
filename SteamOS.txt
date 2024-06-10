@@ -1,0 +1,32 @@
+This short guide assumes a relatively fresh install of SteamOS on a Steam Deck, which includes Steam as already installed and an iRacing account that is not already activated in any way on Steam.
+
+Switch to Steam Deck "desktop" mode.
+
+Install Protontricks
+    - flatpak install flathub com.github.Matoking.protontricks
+    OR you can install it from the desktop environment "Discover" software library
+
+Alias protontricks with the following two commands
+    - alias protontricks='flatpak run com.github.Matoking.protontricks'
+    - alias protontricks-launch='flatpak run --command=protontricks-launch com.github.Matoking.protontricks'
+
+Grab your Steam key here:
+    https://support.iracing.com/support/solutions/articles/31000165400-how-to-generate-a-steam-key
+
+Install iRacing on Steam, note there are only three .bat files at the end of this.
+
+Download the iRacing installer and place into an easy to locate directory if needed.
+    https://members.iracing.com/download/member/noservice.jsp and click "Download iRacing Software"
+
+run
+    - protontricks-launch --appid 266410 [path to iRacing installer.exe]
+
+Follow all the prompts, place the install location to where Steam installed iRacing
+    - usually in Z:/home/$USER/.steam/steam/steamapps/common/iRacing
+    make sure to check there is no double /iRacing/iRacing/
+
+Once installed, for now select Proton Experimental as the Steam Play Compatibility tool - though GE-Proton9-5 does work.
+
+I suggest always running the game from Desktop mode. I use a "Gamepad with Mouse Trackpad" steam controller configuration so I can use the mouse in the menus and click with the trackpad.
+
+Click PLAY in Steam.
