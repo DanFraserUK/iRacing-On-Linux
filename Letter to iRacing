@@ -1,0 +1,123 @@
+To: support@iracing.com
+Subject: Enabling EOS Linux Module — A Detailed Case from a Long-Term Member
+
+---
+
+My name is Dan Fraser and I have been an iRacing member for six years. In that time I won the Nürburgring Endurance Championship in 2022 — the only British winner, and the last champion of that series in the MX-5. I am known across multiple sim racing communities for my pace, racecraft, and technical knowledge of the game, to the point where iRacing staff contacted me directly to assist in improving the default MX-5 setups shipped in the sim. My primary identity within iRacing is as a racer and a contributor — Linux came later. What follows is a detailed case for a specific, minimal change that would allow a group of paying members to use the service they subscribe to.
+
+---
+
+It is a bad idea for iRacing to provide support for Linux due to the considerable number of distributions, methods for running iRacing, the hardware, the configuration, compilation and other accompanying software that can create a presumably insurmountable mountain of knowledge to assemble and maintain. This would be a significant ongoing commitment for the admittedly smaller user base expected with an additional operating system. In my own time assisting other users with setting up iRacing on Linux I have held the stance of "Arch based only help, my friend" because the amount of combinations are high. I strongly recommend CachyOS ( https://cachyos.org/ ) now, especially with the default KDE.
+
+Many commenters here and off the forums seem to be confusing what 'support' can actually mean. Can it mean a dedicated support team with codebase input and more? Yes, but it can also mean just ticking a box or writing a patch note. iRacing would not need to support multiple distributions or hardware configurations on Linux. Enabling the Epic Online Services (EOS) Anti-Cheat Linux module isn't explicit support that comes with all the caveats of having support documents, codebase, emails and so on — but it's enough action to count as 'support'. Who says support actually has to have the extended commitments of all those extra requirements? In both regular English and programming, support can mean "allow it to happen." The naysayers scream from the rooftops that iRacing should not provide support for Linux.
+
+I agree.
+
+To clarify the distinction: iRacing should not provide support for iRacing on Linux. iRacing should support iRacing on Linux. See the difference? Providing support is the correct term for all the additional burden involved.
+
+iRacing did support Linux and EasyAntiCheat simultaneously. The introduction of Easy Anti-Cheat (EAC) is in 2015 Season 4 in the Release Notes History PDF ( https://forums.iracing.com/discussion/61531/all-release-notes-since-the-beginning-of-iracing-time ). Linux compatibility is discussed in 2017 Season 2 from the same PDF. That's nearly two years of overlap of anti-cheat and Linux.
+
+So why exactly did Linux support end in 2017? iRacing President Tony Gardner explained it directly in a staff announcement post ( https://members.iracing.com/jforum/posts/list/3519019.page#10314970 ) dated 2nd February 2017: the move from DX9 to DX11 was the specific cause. The simultaneous transition from 32-bit to 64-bit was a separate matter entirely — the Linux support ending was purely a DX11 issue, because at the time WINE did not support DX11. Proton, built on a modern WINE fork with full DX11 and DX12 support, has existed for years. And Gardner himself wrote at the time: "There is a possibility down the road that our emulation partners provide DX11 support and we revisit that integration option."
+
+We do know iRacing can run on Linux. Due to JacKeTUs ( https://github.com/JacKeTUs ) and Lawstorant's work on device compatibility, seemingly all popular hardware works — most is directly in the kernel with no need to set up anything. I have even streamed online races on Twitch from Linux when the game worked for online activities during the introduction of EOS replacing EAC — I only have this one clip as evidence: https://www.twitch.tv/fraserpoweredbylinux/clip/EnjoyableCorrectFalconShadyLulu-aj5mnj8xHYu_A9v3
+
+A good amount of additional software functions fully: Garage61 by Ruben Vermeersch (actually developed on Linux!), Trading Paints, CrewchiefV4 and more. Of the others that don't work (overlays such as KAPPS, RaceLabs etc), should iRacing on Linux be denied because that developer hasn't made their software work for Linux? You don't strictly need that software to race, though it would of course be welcome. And regarding overlays — so many features have been built into iRacing as standard that third party overlays are far from essential for most users.
+
+We know it works. You can see it working in my iRacing on Linux YouTube video: https://www.youtube.com/watch?v=CZW6i_ebchI — worth noting that the vast majority of that video's runtime is the initial download and installation process, not configuration or setup of Linux-specific software. There is very little to configure.
+
+Valve's work on Proton — a derivative of WINE — has become the standard solution for gaming on Linux, effectively replacing standalone WINE configurations for this purpose. I personally had excellent performance using triple screens, a Logitech G29, and Fanatec V3 pedals.
+
+The current situation is that nothing works since EOS was updated and appears to implement a check-first-then-load process. No replays, no Test Drive, no AI Racing — all that can be done is browse the UI. It is worth noting that there is a well-known workaround for accessing offline session types, not specific to iRacing but to EOS Anti-Cheat itself, which I cover later in this letter. I have no problem with the anti-cheat working this way; having an anti-cheat is a good thing. The one thing stopping iRacing from being functional on Linux is not drivers, not hardware, not any additional software, not users. It is one file. One file that a developer compiles. One file that the anti-cheat looks for online when trying to use the game. The result is a 403 access denied error because that one file does not exist. You can find the log file in which this is reported at:
+
+    %APPDATA%\Roaming/EasyAntiCheat/b65439c4915347ccacad9a6266965ef7/1e9a5fc2cf4d4a5f80769a0cc08210a6/
+
+(This path is usable in a browser, with win64 and linux64 variants at the end.) The file does not exist because iRacing has not yet gone through a dropdown menu and selected one additional item to compile it. The EOS support pages explaining the steps to create this file are here:
+
+  - Anti-Cheat Interfaces — Linux, WINE and Proton support:
+    https://dev.epicgames.com/docs/epic-online-services/trust-and-safety/anti-cheat-interfaces/anti-cheat-interfaces#linux-wine-and-proton-support
+
+  - Client Module Setup and Updates:
+    https://dev.epicgames.com/docs/epic-online-services/trust-and-safety/anti-cheat-interfaces/using-anti-cheat#client-module-setup-and-updates
+
+  - Steamworks Proton documentation:
+    https://partner.steamgames.com/doc/steamdeck/proton
+
+A staff member commented about the past status of Linux here: https://forums.iracing.com/discussion/comment/491065/#Comment_491065
+
+There are a number of points to address in that comment. He confirms iRacing actively supported Linux and Mac. What that support actually looked like is more significant than many realise: iRacing shipped native Linux builds distributed as DEB packages for Debian, Ubuntu and Mint, RPM packages for Red Hat, Fedora and OpenSUSE, and a BIN installer for Arch and other distributions. These were maintained builds with proper dependency management, posted by iRacing staff member Andrew Eikum. The underlying technology was CodeWeavers' CrossOver (a commercial WINE fork), but the effort involved — packaging, dependency resolution across multiple distributions, hardware compatibility work — represents a level of dedication that goes well beyond what is being asked for today. He points out that hardware support on Linux seemed inconsistent, which we now know is a completely different situation thanks to the work of JacKeTUs and Lawstorant. David specifically calls out the percentage of iRacing users on Linux at that time, and what is notable is that iRacing supported Linux for years even with a far less than 1% userbase. More importantly, he clearly states that x64 and DX11 was the actual reason "we had to drop the whole thing" — not the userbase numbers. The Steam Deck is not a platform for a simracing developer to be targeting as a primary device. The only relevance of the Steam Deck to this discussion is that its underlying operating system is Linux.
+
+He made another comment here ( https://forums.iracing.com/discussion/comment/795667/#Comment_795667 ) that raises points which appear to reflect some misunderstanding of what would actually be involved. The first bullet point is of interest not because of user numbers but because of the mention of "effort" — I would genuinely like to understand what the perception is of the effort required. The peripheral support point is not accurate given the work referenced above. Regarding security and EOS/EAC — we know this has Linux capabilities and developer support, as shown by the links above — but I am also curious which third-party APIs are believed to be incompatible and on what basis. I suspect one may relate to Apple Vision Pro. The 32/64-bit anomaly mentioned is understandable as a concern, however as far as I have been able to research, the FPU rounding issue is solely a difference between 32-bit and 64-bit and is wholly independent of the operating system. The last bullet point appears to assume that what is being requested is a full port: rebase, packages, graphical APIs, the works. That is not what is being asked. David specifically references "a third party who specializes in game ports" — that is definitively not what is being requested here. The security concerns raised in this comment deserve more detailed examination, and I will address them shortly.
+
+I would genuinely welcome a conversation with iRacing staff — whether David, Tony, or others involved in this discussion — to address any outstanding concerns directly. If there are technical reservations I have not covered here, I would like to understand them. If there are compatibility concerns that require testing, I am happy to assist. If scheduling structured online test sessions with Linux users to validate behaviour in a live environment would help build confidence, that is something I believe the community would participate in enthusiastically. I would very much welcome that opportunity.
+
+The security concern around EOS on Linux is perhaps the most technically misunderstood aspect of this discussion. A forum user named Marc articulated it clearly here ( https://forums.iracing.com/discussion/comment/785152#Comment_785152 ):
+
+    "From a Proton/Linux perspective, EAC on Linux runs as a userspace component that talks to the
+    Windows-side EAC the same way a regular Windows application would, via Proton's translation layer.
+
+    When a Windows game uses EAC through Proton, Proton runs the Windows EAC client in its
+    Wine-compatible environment, while a Linux-native EAC client (also userspace) is installed alongside
+    it. The Proton EAC runtime glues these two together, so the Windows-side EAC can query the
+    Linux-side EAC without ever needing a Linux kernel driver. In practice, this looks like a normal
+    Windows game talking to its usual EAC service, but the underlying OS is Linux.
+
+    The Linux kernel itself is not where cheating comes from in this model. Most cheats still target
+    the game process, memory, or network layer — just like on Windows. What matters more is what the
+    game and EAC can observe in userspace: loaded modules, unusual memory patterns, known cheat
+    signatures, etc. Because of this, the Linux kernel is not the 'front line' of cheating — it is
+    just the OS that hosts the game, Proton, and the EAC userspace components.
+
+    On top of that, iRacing (like most serious online games) relies on server-side authoritative state.
+    That means the server is the final source of truth for positions, speeds, collisions, and rules.
+    The client is only a display and input proxy — it cannot freely change the race outcome. Effective
+    anti-cheat on iRacing is less about deep kernel access and more about: A) detecting suspicious
+    behaviour on the client (speed hacks, telemetry corruption, etc.) and B) validating everything
+    against the server's authoritative model. This is why other EAC titles already run on Linux/Proton
+    without suddenly becoming cheat-ridden. The real security is in the server-side logic and
+    behavioural checks, not in whether the anti-cheat touches the kernel.
+
+    So the concern that 'EAC on Linux is only in userspace, so it must be unsafe' is overstated.
+    Proton already connects the Windows-side EAC to a Linux-native EAC client, and the actual security
+    boundary for iRacing is mostly what the server accepts from the client — not which OS or kernel
+    the EAC runs on."
+
+It should also be noted that Windows remains open to the same vulnerabilities exposed by a lack of server-side authoritative state on certain functions and capabilities. I have recently seen a program that detects data from iRacing's API and modifies device inputs — and it is completely operating system agnostic.
+
+---
+
+It has to be pointed out that iRacing's competitors are all available on Linux. LMU, rFactor, rFactor 2, RaceRoom, Automobilista, Automobilista 2, Assetto Corsa, Assetto Corsa Competizione, Assetto Corsa Evo, Assetto Corsa Rally, and so on all work on Linux. Some work directly; a rare few have had community-led fixes to resolve an issue (LMU needed a custom Proton build to fix a 2008 DLL issue — ironically, given that iRacing receives criticism for its "2008 engine").
+
+iRacing is the true odd one out at this point in time.
+
+---
+
+Regarding community-led fixes — this is relevant context for what the Linux community is willing and able to do without any formal support commitment from iRacing:
+
+Recently, the UI would crash after the credential-checking stage when attempting to load on Linux. The root cause was the iRacing service attempting to locate devices on the local network (the Apple Vision Pro integration mentioned earlier) and then failing to exit that check gracefully. A non-standard local network configuration could trigger the same failure on Windows, and a future Windows update modifying dnsapi.dll could introduce the same issue there. Crucially, a failure at this point is non-critical — the service should handle it gracefully and continue rather than hard crashing.
+
+So I thought to myself, "Fine, I'll do it myself then." I had a lot to learn along the way, but here is where that landed:
+
+  - MR with Wine directly:
+    https://gitlab.winehq.org/wine/wine/-/merge_requests/11208
+
+  - PR with Proton-CachyOS (sits in wine-cachyos due to how CachyOS packages their Proton fork):
+    https://github.com/CachyOS/wine-cachyos/pull/18
+
+  - Proton pre-release — extract to compatibilitytools.d and load via Steam using a key from your iRacing account page:
+    https://github.com/DanFraserUK/proton-cachyos/releases
+
+That fixes the UI crashing. Aside from the Paint section in Electron, the UI is completely functional. Due to the way EOS works, online play is completely unusable (the result is a black screen with the error: EOS_ACCCAR_NullClient — Anti-cheat protection not active (NullClient)). However, with a well-known /etc/hosts edit one can bypass the initial EOS check to access Test Drive, Replays, and AI Racing — all of which function as expected, with no stuttering in my own sessions. These session types work because there is no local server check requesting confirmation that the anti-cheat module is active, as the online servers do.
+
+---
+
+That possibility has arrived. It arrived years ago.
+
+Gardner left a door open in 2017. Proton walked through it. All that remains is for iRacing to acknowledge that and enable one module.
+
+iRacing has supported Linux before, and genuinely provided support for it too — shipping maintained native builds for Debian, Ubuntu, Mint, Fedora, Red Hat, OpenSUSE and Arch is no small undertaking. All that is being asked now is far less: build one module. One compiled file. One dropdown selection. The community has already demonstrated the game runs well, fixed crashes upstream, and asked for nothing more than the ability to connect to the servers they already pay for. Not a port. Not a dedicated support team. Not documentation. Just the switch being flipped. Let your users choose their operating system.
+
+I have tried to present this as clearly and thoroughly as I can. I am a racing driver who uses Linux, and the case here is straightforward: iRacing has done this before, the technical path is well documented, the community has already done significant legwork, and the barrier remaining is a single compiled file. I would welcome any response, question, or conversation this prompts.
+
+Thank you for your time.
+
+Dan Fraser
