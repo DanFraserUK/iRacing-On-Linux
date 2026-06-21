@@ -8,6 +8,7 @@ STEAM_ROOT="$HOME/.steam/steam"
 
 # Apps to search for: "Display Name|exe filename"
 # Searched inside the Proton prefix (compatdata/266410)
+# Can add more programs in the future
 APPS=(
     "Garage61|Garage61.exe"
     "Trading Paints|Trading Paints.exe"
@@ -23,8 +24,8 @@ print_indented() {
     local prefix="    ${label}"
     local indent
     indent=$(printf '%*s' "${#prefix}" '')
-    echo "${prefix}${value}" | fold -s -w "${cols}" \
-        | sed "2,\$s/^/${indent}/"
+    echo "${prefix}${value}" | fold -s -w "${cols}" |
+        sed "2,\$s/^/${indent}/"
 }
 
 # --- Find all Steam library paths ---
@@ -65,8 +66,8 @@ for APP in "${APPS[@]}"; do
     NAME="${APP%%|*}"
     EXE_RELATIVE="${APP##*|}"
     EXE_PATH=$(
-        find "$PREFIX_DIR" -iname "$EXE_RELATIVE" -type f 2>/dev/null \
-            | head -n 1
+        find "$PREFIX_DIR" -iname "$EXE_RELATIVE" -type f 2>/dev/null |
+            head -n 1
     )
     if [[ -z "$EXE_PATH" ]]; then
         echo "  [NOT FOUND] $NAME ($EXE_RELATIVE)"
@@ -91,7 +92,7 @@ else
 fi
 echo ""
 for i in "${!FOUND_NAMES[@]}"; do
-    NUM=$(( i + 1 ))
+    NUM=$((i + 1))
     echo "${NUM} - ${FOUND_NAMES[$i]}"
     print_indented "Path:   " "${FOUND_PATHS[$i]}"
     print_indented "Target: " \
@@ -117,7 +118,7 @@ elif [[ "$SELECTION" == "0" ]]; then
 else
     for TOKEN in $SELECTION; do
         if [[ "$TOKEN" =~ ^[0-9]+$ ]]; then
-            IDX=$(( TOKEN - 1 ))
+            IDX=$((TOKEN - 1))
             if [[ $IDX -ge 0 && $IDX -lt ${#FOUND_NAMES[@]} ]]; then
                 SELECTED_INDICES+=("$IDX")
             else
@@ -143,7 +144,7 @@ for IDX in "${SELECTED_INDICES[@]}"; do
     EXE_PATH="${FOUND_PATHS[$IDX]}"
     SHORTCUT="$DESKTOP_DIR/${NAME// /_}.desktop"
 
-    cat > "$SHORTCUT" <<EOF
+    cat >"$SHORTCUT" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -156,7 +157,7 @@ EOF
 
     chmod +x "$SHORTCUT"
     echo "  Created: $SHORTCUT"
-    (( CREATED++ ))
+    ((CREATED++))
 done
 
 echo ""
