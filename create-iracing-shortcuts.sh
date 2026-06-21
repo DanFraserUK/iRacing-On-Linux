@@ -8,6 +8,7 @@ STEAM_ROOT="$HOME/.steam/steam"
 
 # Apps to search for: "Display Name|exe filename"
 # Searched inside the Proton prefix (compatdata/266410)
+# Can add more programs in the future
 APPS=(
     "Garage61|Garage61.exe"
     "Trading Paints|Trading Paints.exe"
