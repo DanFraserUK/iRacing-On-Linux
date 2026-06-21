@@ -1,0 +1,32 @@
+This short guide assumes a fresh install of an Arch based OS such as EndeavourOS or CachyOS which should include Steam as already installed and an iRacing account that is not already activated in any way on Steam.
+
+[It has been a while since I did a fresh install]
+Install protontricks:
+    $ yay -S protontricks
+
+Grab your Steam key here:
+    https://support.iracing.com/support/solutions/articles/31000165400-how-to-generate-a-steam-key
+
+Install iRacing on Steam, note there are only three .bat files at the end of this.  Add/Move the Steam Library where iRacing is installed to another drive at this point if you need to.
+
+Download the iRacing installer and place into an easy to locate directory if needed.  This will download the latest full release, you will almost certainly have to download additional content after logging in.
+    https://members.iracing.com/download/member/noservice.jsp
+
+run
+    $ protontricks-launch --appid 266410 [path to the installer you downloaded]
+
+Follow all the prompts, leave the install location alone (default is c:\Program Files (x86)\iRacing).
+
+run
+    $ protontricks --no-bwrap 266410 -q --force vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022 d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact
+This is to make sure all libraries for iRacing are installed to the prefix.
+
+Download the proton build here: https://github.com/DanFraserUK/proton-cachyos/releases
+    follow the instructions to extract to ~/.steam/steam/compatibilitytools.d/ you should have a new folder inside there called iracing-dnsapi-fixmes.
+    RESTART STEAM.
+    In Steam, right click iRacing, click properties and select Compatibility on the left and tick Force the use of a specific Steam Play compatibility tool.  Then select iracing-dnsapi-fixmes.
+
+Click PLAY and log in.
+
+To access Test Drive, Replays or AI Racing through the UI, you need to edit /etc/hosts, enter this in the terminal (needs sudo password):
+    $ echo "0.0.0.0 modules-cdn.eac-prod.on.epicgames.com" | sudo tee -a /etc/hosts
