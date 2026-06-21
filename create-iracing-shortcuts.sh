@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
-# Finds iRacing companion apps across all Steam libraries and creates .desktop shortcuts
-# Assumes any additional applications are installed with
-#     $ protontricks-launch --appid 266410 /path/to/installer
-# and the default install location is left untouched installing the application to the
-# Proton prefix for iRacing
+# create-iracing-shortcuts.sh
+# Finds iRacing companion apps and creates .desktop shortcuts
 
 APPID=266410
 DESKTOP_DIR="$HOME/Desktop"
 STEAM_ROOT="$HOME/.steam/steam"
 
-# Apps to search for: "Display Name|relative/path/to/exe"
-# Path is relative to the iRacing install directory
-# Can add more programs in the future
+# Apps to search for: "Display Name|exe filename"
+# Searched inside the Proton prefix (compatdata/266410)
 APPS=(
     "Garage61|Garage61.exe"
     "Trading Paints|Trading Paints.exe"
     "CrewChief|CrewChiefV4.exe"
 )
+
+# Print a labelled value, indenting any wrapped continuation lines
+print_indented() {
+    local label="$1"
+    local value="$2"
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    local prefix="    ${label}"
+    local indent
+    indent=$(printf '%*s' "${#prefix}" '')
+    echo "${prefix}${value}" | fold -s -w "${cols}" \
+        | sed "2,\$s/^/${indent}/"
+}
 
 # --- Find all Steam library paths ---
 LIBRARY_VDF="$STEAM_ROOT/steamapps/libraryfolders.vdf"
@@ -25,26 +34,29 @@ if [[ ! -f "$LIBRARY_VDF" ]]; then
     exit 1
 fi
 
-mapfile -t LIBRARY_PATHS < <(grep '"path"' "$LIBRARY_VDF" | awk -F'"' '{print $4}')
-LIBRARY_PATHS+=("$STEAM_ROOT")  # Always include default library
+mapfile -t LIBRARY_PATHS < <(
+    grep '"path"' "$LIBRARY_VDF" | awk -F'"' '{print $4}'
+)
+LIBRARY_PATHS+=("$STEAM_ROOT")
 
-# --- Find the compatdata prefix for iRacing across all libraries ---
+# --- Find the compatdata prefix across all libraries ---
 PREFIX_DIR=""
 for LIB in "${LIBRARY_PATHS[@]}"; do
     CANDIDATE="$LIB/steamapps/compatdata/$APPID/pfx"
     if [[ -d "$CANDIDATE" ]]; then
         PREFIX_DIR="$CANDIDATE"
-        echo "Found iRacing Proton prefix at: $PREFIX_DIR"
+        echo "Found iRacing Proton prefix at:"
+        echo "  $PREFIX_DIR"
         break
     fi
 done
 
 if [[ -z "$PREFIX_DIR" ]]; then
-    echo "Error: Proton prefix for iRacing (appid $APPID) not found in any Steam library."
+    echo "Error: Proton prefix for iRacing (appid $APPID) not found."
     exit 1
 fi
 
-# --- Discovery phase: find all apps first ---
+# --- Discovery phase ---
 echo ""
 FOUND_NAMES=()
 FOUND_PATHS=()
@@ -52,8 +64,10 @@ FOUND_PATHS=()
 for APP in "${APPS[@]}"; do
     NAME="${APP%%|*}"
     EXE_RELATIVE="${APP##*|}"
-    EXE_PATH=$(find "$PREFIX_DIR" -iname "$EXE_RELATIVE" -type f 2>/dev/null | head -n 1)
-
+    EXE_PATH=$(
+        find "$PREFIX_DIR" -iname "$EXE_RELATIVE" -type f 2>/dev/null \
+            | head -n 1
+    )
     if [[ -z "$EXE_PATH" ]]; then
         echo "  [NOT FOUND] $NAME ($EXE_RELATIVE)"
     else
@@ -69,34 +83,37 @@ if [[ ${#FOUND_NAMES[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# --- Print summary of found apps ---
-echo "Found ${#FOUND_NAMES[@]} app(s):"
+# --- Print summary ---
+if [[ ${#FOUND_NAMES[@]} -eq 1 ]]; then
+    echo "Shortcuts: The following app shortcut can be created"
+else
+    echo "Shortcuts: The following app shortcuts can be created"
+fi
 echo ""
 for i in "${!FOUND_NAMES[@]}"; do
     NUM=$(( i + 1 ))
-    echo "  [$NUM] ${FOUND_NAMES[$i]}"
-    echo "       Path:   ${FOUND_PATHS[$i]}"
-    echo "       Target: protontricks-launch --appid $APPID \"${FOUND_PATHS[$i]}\""
+    echo "${NUM} - ${FOUND_NAMES[$i]}"
+    print_indented "Path:   " "${FOUND_PATHS[$i]}"
+    print_indented "Target: " \
+        "protontricks-launch --appid $APPID \"${FOUND_PATHS[$i]}\""
     echo ""
 done
 
-# --- Prompt for selection ---
-echo "Which shortcuts would you like to create?"
-echo "  [Enter] = all  |  N or none = none  |  numbers separated by spaces (e.g. 1 3)"
-echo ""
+# --- Prompt ---
+echo "Select the shortcut(s) to create (e.g. 1 3 5),"
+echo "select 0 to create them all, or press \"enter\" to skip:"
 read -rp "> " SELECTION
 echo ""
 
-# --- Resolve selection to indices ---
+# --- Resolve selection ---
 SELECTED_INDICES=()
-SELECTION_LOWER="${SELECTION,,}"
 if [[ -z "$SELECTION" ]]; then
+    echo "No shortcuts created."
+    exit 0
+elif [[ "$SELECTION" == "0" ]]; then
     for i in "${!FOUND_NAMES[@]}"; do
         SELECTED_INDICES+=("$i")
     done
-elif [[ "$SELECTION_LOWER" == "n" || "$SELECTION_LOWER" == "none" ]]; then
-    echo "Aborted. No shortcuts created."
-    exit 0
 else
     for TOKEN in $SELECTION; do
         if [[ "$TOKEN" =~ ^[0-9]+$ ]]; then
@@ -117,7 +134,7 @@ if [[ ${#SELECTED_INDICES[@]} -eq 0 ]]; then
     exit 0
 fi
 
-# --- Create Desktop dir and shortcuts ---
+# --- Create shortcuts ---
 mkdir -p "$DESKTOP_DIR"
 CREATED=0
 
