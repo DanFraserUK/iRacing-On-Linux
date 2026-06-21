@@ -8,24 +8,20 @@ STEAM_ROOT="$HOME/.steam/steam"
 
 # Apps to search for: "Display Name|exe filename"
 # Searched inside the Proton prefix (compatdata/266410)
-# Can add more programs in the future
 APPS=(
     "Garage61|Garage61.exe"
     "Trading Paints|Trading Paints.exe"
     "CrewChief|CrewChiefV4.exe"
 )
 
-# Print a labelled value, indenting any wrapped continuation lines
+# Print a labelled value, wrapping at 80 cols with a hanging indent
 print_indented() {
     local label="$1"
     local value="$2"
-    local cols
-    cols=$(tput cols 2>/dev/null || echo 80)
     local prefix="    ${label}"
     local indent
     indent=$(printf '%*s' "${#prefix}" '')
-    echo "${prefix}${value}" | fold -s -w "${cols}" |
-        sed "2,\$s/^/${indent}/"
+    echo "${prefix}${value}" | fold -s -w 80 | sed "2,\$s/^/${indent}/"
 }
 
 # --- Find all Steam library paths ---
@@ -35,9 +31,7 @@ if [[ ! -f "$LIBRARY_VDF" ]]; then
     exit 1
 fi
 
-mapfile -t LIBRARY_PATHS < <(
-    grep '"path"' "$LIBRARY_VDF" | awk -F'"' '{print $4}'
-)
+mapfile -t LIBRARY_PATHS < <(grep '"path"' "$LIBRARY_VDF" | awk -F'"' '{print $4}')
 LIBRARY_PATHS+=("$STEAM_ROOT")
 
 # --- Find the compatdata prefix across all libraries ---
@@ -46,8 +40,7 @@ for LIB in "${LIBRARY_PATHS[@]}"; do
     CANDIDATE="$LIB/steamapps/compatdata/$APPID/pfx"
     if [[ -d "$CANDIDATE" ]]; then
         PREFIX_DIR="$CANDIDATE"
-        echo "Found iRacing Proton prefix at:"
-        echo "  $PREFIX_DIR"
+        echo "Found iRacing Proton prefix at: $PREFIX_DIR" | fold -s -w 80
         break
     fi
 done
@@ -65,10 +58,7 @@ FOUND_PATHS=()
 for APP in "${APPS[@]}"; do
     NAME="${APP%%|*}"
     EXE_RELATIVE="${APP##*|}"
-    EXE_PATH=$(
-        find "$PREFIX_DIR" -iname "$EXE_RELATIVE" -type f 2>/dev/null |
-            head -n 1
-    )
+    EXE_PATH=$(find "$PREFIX_DIR" -iname "$EXE_RELATIVE" -type f 2>/dev/null | head -n 1)
     if [[ -z "$EXE_PATH" ]]; then
         echo "  [NOT FOUND] $NAME ($EXE_RELATIVE)"
     else
@@ -92,11 +82,10 @@ else
 fi
 echo ""
 for i in "${!FOUND_NAMES[@]}"; do
-    NUM=$((i + 1))
+    NUM=$(( i + 1 ))
     echo "${NUM} - ${FOUND_NAMES[$i]}"
     print_indented "Path:   " "${FOUND_PATHS[$i]}"
-    print_indented "Target: " \
-        "protontricks-launch --appid $APPID \"${FOUND_PATHS[$i]}\""
+    print_indented "Target: " "protontricks-launch --appid $APPID \"${FOUND_PATHS[$i]}\""
     echo ""
 done
 
@@ -118,7 +107,7 @@ elif [[ "$SELECTION" == "0" ]]; then
 else
     for TOKEN in $SELECTION; do
         if [[ "$TOKEN" =~ ^[0-9]+$ ]]; then
-            IDX=$((TOKEN - 1))
+            IDX=$(( TOKEN - 1 ))
             if [[ $IDX -ge 0 && $IDX -lt ${#FOUND_NAMES[@]} ]]; then
                 SELECTED_INDICES+=("$IDX")
             else
@@ -144,7 +133,7 @@ for IDX in "${SELECTED_INDICES[@]}"; do
     EXE_PATH="${FOUND_PATHS[$IDX]}"
     SHORTCUT="$DESKTOP_DIR/${NAME// /_}.desktop"
 
-    cat >"$SHORTCUT" <<EOF
+    cat > "$SHORTCUT" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
@@ -157,7 +146,7 @@ EOF
 
     chmod +x "$SHORTCUT"
     echo "  Created: $SHORTCUT"
-    ((CREATED++))
+    (( CREATED++ ))
 done
 
 echo ""
