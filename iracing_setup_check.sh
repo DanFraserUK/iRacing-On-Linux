@@ -9,8 +9,10 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+LIGHTYELLOW='\033[38;2;255;255;153m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+PINK='\033[38;2;255;163;181m'
 NC='\033[0m' # No Colour
 
 # --- General log (same dir as script) ---
@@ -25,9 +27,10 @@ success() { echo -e "${GREEN}[OK]${NC}    $*";  log "[OK]    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*";  log "[WARN]  $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*";  log "[ERROR] $*"; }
 header()  {
-    echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════════${NC}"
-    echo -e "${BOLD}${CYAN}  $*${NC}"
-    echo -e "${BOLD}${CYAN}══════════════════════════════════════════════${NC}\n"
+    local title="${*#Step [0-9]*: }"
+    echo -e "\n${PINK}$(printf '═%.0s' {1..80})${NC}"
+    echo -e "${BOLD}${LIGHTYELLOW}  ${title}${NC}"
+    echo -e "${PINK}$(printf '═%.0s' {1..80})${NC}\n"
     log "=== $* ==="
 }
 
@@ -41,15 +44,20 @@ press_any_key() {
 # ENTRANCE MESSAGE
 # =============================================================================
 clear
-echo -e "${BOLD}${CYAN}"
+echo -e "${BOLD}${PINK}"
 cat << 'EOF'
-  ___  ____            _             ____       _               
- |_ _||  _ \  __ _  __(_)_ __   __ _/ ___|  ___| |_ _   _ _ __  
-  | | | |_) |/ _` |/ __| | '_ \ / _` \___ \ / _ \ __| | | | '_ \ 
-  | | |  _ <| (_| | (__| | | | | (_| |___) |  __/ |_| |_| | |_) |
- |___||_| \_\\__,_|\___|_|_| |_|\__, |____/ \___|\__|\__,_| .__/ 
-                                  |___/                     |_|    
-         Linux Setup Checker — Arch-Based Distros
+   ██████╗  █████╗  ██████╗██╗███╗   ██╗ ██████╗ 
+██║██╔══██╗██╔══██╗██╔════╝██║████╗  ██║██╔════╝ 
+██║██████╔╝███████║██║     ██║██╔██╗ ██║██║  ███╗
+██║██╔══██╗██╔══██║██║     ██║██║╚██╗██║██║   ██║
+██║██║  ██║██║  ██║╚██████╗██║██║ ╚████║╚██████╔╝
+╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ 
+███████╗███████╗████████╗██╗   ██╗██████╗ 
+██╔════╝██╔════╝╚══██╔══╝██║   ██║██╔══██╗
+███████╗█████╗     ██║   ██║   ██║██████╔╝
+╚════██║██╔══╝     ██║   ██║   ██║██╔═══╝ 
+███████║███████╗   ██║   ╚██████╔╝██║     
+╚══════╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝     
 EOF
 echo -e "${NC}"
 echo -e "${BOLD}This short walkthrough checks a fresh install of an Arch-based OS${NC}"
@@ -438,7 +446,7 @@ fi
 # =============================================================================
 # STEP 8 — Install custom Proton build
 # =============================================================================
-header "Step 8: Installing Custom Proton Build (proton-cachyos)"
+header "Step 8: Installing Custom Proton Build by Dan Fraser"
 
 info "Force-closing Steam before installing the custom Proton build..."
 pkill -f steam || true
@@ -583,7 +591,7 @@ press_any_key
 # DONE!
 # =============================================================================
 clear
-echo -e "${BOLD}${GREEN}"
+echo -e "${BOLD}${PINK}"
 cat << 'EOF'
   ██████╗  ██████╗ ███╗   ██╗███████╗██╗
   ██╔══██╗██╔═══██╗████╗  ██║██╔════╝██║
@@ -608,9 +616,8 @@ echo -e "  before your first launch!"
 echo
 echo -e "${BOLD}${CYAN}  This was for you Pabs ${RED}<3${NC}"
 echo
+echo -e "${GREEN}  All done! Open Steam and enjoy your racing!${NC}"
+echo
 echo -e "${YELLOW}  Press any key to finish...${NC}"
 read -n 1 -s -r
-echo
-
-echo -e "${GREEN}  All done! Open Steam and enjoy your racing!${NC}"
 echo
