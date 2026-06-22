@@ -383,7 +383,7 @@ PROTONTRICKS_LOG="$SCRIPT_DIR/danfrasers-iracing-step7.log"
 
 REQUIRED_PACKAGES=(
     vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022
-    d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact
+    d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact corefonts allfonts
 )
 
 info "Checking what is already installed in the Proton prefix..."
@@ -409,11 +409,11 @@ if [[ ${#MISSING[@]} -eq 0 ]]; then
     press_any_key
 else
     echo -e "  ${YELLOW}${#MISSING[@]} package(s) need to be installed: ${BOLD}${MISSING[*]}${NC}"
-    echo -e "  ${YELLOW}This may take several minutes. Output is logged to danfrasers-iracing-step7.log in the script directory.${NC}"
+    echo -e "  ${YELLOW}This may take some time. Output is logged to danfrasers-iracing-step7.log in the script directory.${NC}"
     echo
 
     # Run protontricks on only the missing packages, all output to log
-    protontricks --no-bwrap "$IRACING_APPID" -q --force \
+    protontricks "$IRACING_APPID" -q --force \
         "${MISSING[@]}" \
         >"$PROTONTRICKS_LOG" 2>&1 &
     PT_PID=$!
