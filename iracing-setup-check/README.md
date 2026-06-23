@@ -6,7 +6,7 @@ Only supports Arch based distros for the time being.  Support for Debian/Fedora 
 
 ## Usage
 
-To use this, download the [`iracing_setup_check.sh`](https://raw.githubusercontent.com/DanFraserUK/iRacing-On-Linux/main/iracing%20setup%20check/iracing_setup_check.sh) file. It can be run from anywhere.
+To use this, download the <a href="https://raw.githubusercontent.com/DanFraserUK/iRacing-On-Linux/main/iracing-setup-check/iracing_setup_check.sh" download>iracing_setup_check.sh</a> file. It can be run from anywhere.
 
 Open a terminal at its location and run:
 
