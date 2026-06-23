@@ -4,9 +4,12 @@ This directory contains screenshots of the iRacing setup check program on Linux.
 
 Only supports Arch based distros for the time being.  Support for Debian/Fedora types soon.
 
-## Usage
+Added a simple version (recommended) that assumes a user has installed Linux and has not changed
+or configured anything.  Edge cases and testing has bloated the original script a lot.
 
-To use this, download the <a href="https://raw.githubusercontent.com/DanFraserUK/iRacing-On-Linux/main/iracing-setup-check/iracing_setup_check.tar.xz" download>iracing_setup_check.tar.xz</a> and extract it. It can be run from anywhere.
+## Simple Script Usage
+
+To use this, download the `iracing_setup_check.sh file`. It can be run from anywhere.
 
 Open a terminal at its location and run:
 
