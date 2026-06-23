@@ -1,12 +1,17 @@
 # iRacing Setup Check
 
-This directory contains screenshots of the iRacing setup check process on Linux.
+This directory contains screenshots of the iRacing setup check program on Linux.
 
-To use this, download the iracing_setup_check.sh file.  It can be run from anywhere.
+## Usage
 
-open a terminal at its location, type:
-    $ chmod +x ./iracing_setup_check.sh
-    $ ./iracing_setup_check.sh
+To use this, download the [`iracing_setup_check.sh`](https://raw.githubusercontent.com/DanFraserUK/iRacing-On-Linux/main/iracing%20setup%20check/iracing_setup_check.sh) file. It can be run from anywhere.
+
+Open a terminal at its location and run:
+
+```
+$ chmod +x ./iracing_setup_check.sh
+$ ./iracing_setup_check.sh
+```
 
 Follow the prompts.
 
