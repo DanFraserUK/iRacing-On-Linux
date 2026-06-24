@@ -1,49 +1,47 @@
-# iRacing Setup Check
+# iRacing Setup — Simple Edition for Linux
 
-This directory contains screenshots of the iRacing setup check program on Linux.
+A fully automated setup script for iRacing on Linux. This script handles all the legwork — you just run it and follow the prompts.
 
-Only supports Arch based distros for the time being.  Support for Debian/Fedora types soon.
+## What It Does
 
-Added a simple version (recommended) that assumes a user has installed Linux and has not changed
-or configured anything.  Edge cases and testing has bloated the original script a lot.
+This script automatically:
+- Checks your system for required dependencies
+- Installs and verifies Steam and protontricks
+- Configures Proton (the compatibility layer for Windows games on Linux)
+- Sets up Wine libraries needed for iRacing
+- Symlinks iRacing documentation to your home folder
 
-## Simple Script Usage
+Everything is logged for troubleshooting if needed.
 
-To use this, download the `iracing_setup_check.sh file`. It can be run from anywhere.
+## Supported Operating Systems
 
-Open a terminal at its location and run:
+- **Arch Linux** / CachyOS / EndeavourOS
+- **Ubuntu** / Linux Mint / Pop!_OS
+- **Fedora** / Nobara
+- **Debian**
 
-```
-$ chmod +x ./iracing_setup_check.sh
-$ ./iracing_setup_check.sh
-```
+**Note:** This script will NOT work on immutable Linux distributions.
 
-Follow the prompts.
+## How to Get and Run the Script
 
-## Screenshots
+### Download
 
-![Screenshot 1](./images/Screenshot_20260623_004752.png)
+1. Go to the **Releases** page (on the right side of this repository)
+2. Download `iracing_setup_simple_gui.sh`
+3. Save it to your Downloads folder
 
-![Screenshot 2](./images/Screenshot_20260623_004755.png)
+### Make It Executable
 
-![Screenshot 3](./images/Screenshot_20260623_004758.png)
+Right-click the `iracing_setup_simple_gui.sh` file and select **Properties** or **Permissions**, then check the box that says **Allow executing file as program** (or similar).
 
-![Screenshot 4](./images/Screenshot_20260623_004804.png)
+### Run the Script
 
-![Screenshot 5](./images/Screenshot_20260623_004813.png)
+Double-click the `iracing_setup_simple_gui.sh` file to start it.
 
-![Screenshot 6](./images/Screenshot_20260623_004817.png)
+A window will appear with the setup wizard. Follow the on-screen instructions — you may be asked for your password at certain steps.
 
-![Screenshot 7](./images/Screenshot_20260623_004820.png)
+## After Setup
 
-![Screenshot 8](./images/Screenshot_20260623_004822.png)
+Once the script completes, iRacing will be ready to play. Launch it through Steam as normal.
 
-![Screenshot 9](./images/Screenshot_20260623_004828.png)
-
-![Screenshot 10](./images/Screenshot_20260623_004832.png)
-
-![Screenshot 11](./images/Screenshot_20260623_004843.png)
-
-![Screenshot 12](./images/Screenshot_20260623_004846.png)
-
-![Screenshot 13](./images/Screenshot_20260623_004851.png)
+A log file is created in the same folder as the script (`danfrasers-iracing-setup.log`) if you need to check for any errors.
