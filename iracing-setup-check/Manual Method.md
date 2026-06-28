@@ -80,7 +80,7 @@ When prompted for the install location, the path could look something like:
 Z:\home\[username]\.steam\steam\steamapps\common\iRacing
 ```
 
-Replace [username] with your actual Linux username. The key is to point it to your Steam library location. Do NOT use the default C:\Program Files location. The .bat files require the game to be installed in the Steam library path.
+Replace [username] with your actual Linux username. The key is to point it to your Steam library location and where iRacing is installed. Ensure that iRacing does not appear twice in the path! Do NOT use the default C:\Program Files location. The .bat files require the game to be installed in the Steam library path.
 
 **Note:** The ~/.steam/steam path may differ depending on your distro and Steam installation configuration. These paths in this guide are typical but not necessarily the default for your system. Adjust accordingly if your Steam library is in a different location.
 
