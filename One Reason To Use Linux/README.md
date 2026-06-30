@@ -16,7 +16,7 @@ Open File Explorer and click Documents in the sidebar.  Look at the address bar.
 - If it shows `C:\Users\<you>\OneDrive\Documents`, OneDrive has its grubby little hands on it.
 - If it shows `C:\Users\<you>\Documents`, it is already local and you can skip ahead.
 
-Repeat for Pictures and Desktop.  Do not skip this check.  Knowing where your files are before you start moving things is the difference between a clean fix and a bad fucking week, because if you get this wrong, microslop will absolutely let you eat the consequences.
+Repeat for Pictures and Desktop and anything else.  Do not skip this check.  Knowing where your files are before you start moving things is the difference between a clean fix and a bad fucking week, because if you get this wrong, microslop will absolutely let you eat the consequences.
 
 ---
 
@@ -26,7 +26,7 @@ This is the setting that tells OneDrive to stop claiming your folders like it ha
 
 1.  Click the OneDrive cloud icon in the taskbar, then the gear icon, then **Settings**.
 2.  Go to **Sync and backup**, then **Manage backup**.
-3.  Turn off the toggle for Desktop, Documents, and Pictures, one at a time.
+3.  Turn off the toggle for Desktop, Documents, Pictures and anything else, one at a time.
 4.  When prompted, choose **This computer only**.  This tells OneDrive to move the files back to your local profile instead of abandoning them in the OneDrive folder like it doesn't give a damn either way.
 
 This prompt does not appear on every version of OneDrive, because of course it fucking doesn't, consistency would be too much to ask.  If you do not see it, move on to Part 3 and do it by hand.
@@ -38,7 +38,7 @@ This prompt does not appear on every version of OneDrive, because of course it f
 No downloading required here.  The files are already on your disk, sitting exactly where OneDrive dumped them.  You are just putting them back where they belonged in the first place.
 
 1.  Open two File Explorer windows side by side.
-2.  In the first, navigate to `C:\Users\<you>\OneDrive\Documents` (and repeat later for Pictures and Desktop).
+2.  In the first, navigate to `C:\Users\<you>\OneDrive\Documents` (and repeat later for Pictures and Desktop and anything else).
 3.  In the second, type `%userprofile%` into the address bar to land on your real local profile.
 4.  Select everything in the OneDrive folder, cut it, and paste it into the matching local folder.
 
@@ -48,7 +48,7 @@ No downloading required here.  The files are already on your disk, sitting exact
 
 Right-click Documents in the sidebar, choose Properties, then the Location tab.  It should now read `C:\Users\<you>\Documents`.  If it still points at OneDrive, click **Restore Default**, because apparently this piece of shit needs to be told twice.
 
-Do the same check for Pictures and Desktop.  Open a few of the moved files to make sure they are real and not some empty placeholder OneDrive left behind as a parting "fuck you." Once you are satisfied everything is intact and local, you are done with the part that requires care.  Everything from here is just demolition.
+Do the same check for Pictures and Desktop and anything else.  Open a few of the moved files to make sure they are real and not some empty placeholder OneDrive left behind as a parting "fuck you."  Once you are satisfied everything is intact and local, you are done with the part that requires care.  Everything from here is just demolition.
 
 ---
 
@@ -85,10 +85,10 @@ OneDrive will not leave quietly.  It never does.  You have to take it apart piec
 
 ## Part 6: Keep It From Coming Back
 
-This is the part that should make you angry, because it is not optional vigilance, it is OneDrive's actual design philosophy.  Major Windows updates have a habit of quietly re-enabling folder backup, sometimes during setup, sometimes after a feature update, often without asking again in any way that registers.  After any large Windows update, check Documents, Pictures, and Desktop locations again.  If you see `OneDrive` in the path, the piece of shit crawled back in like it always does, because it has all the persistence of Japanese knotweed.
+This is the part that should make you angry, because it is not optional vigilance, it is OneDrive's actual design philosophy.  Major Windows updates have a habit of quietly re-enabling folder backup, sometimes during setup, sometimes after a feature update, often without asking again in any way that registers.  After any large Windows update, check Documents, Pictures, and Desktop (and anything else) locations again.  If you see `OneDrive` in the path, the piece of shit crawled back in like it always does, because it has all the persistence of Japanese knotweed.
 
-OneDrive does not get the benefit of the doubt anymore.  It has shown you exactly what it does the second you stop paying attention.  Treat every future update as a potential reinfection and check accordingly.
+Treat every future update as a potential reinfection and check accordingly.
 
-We hate OneDrive.  We hate that it renames a hostage situation "backup," like quietly relocating someone's files without clearly asking first is some kind of favor instead of the bullshit move it actually is.  We hate that it hides your own damn files from you under a folder it created without permission and then acts confused when people call that a hijacking, because that is exactly what it is.  We hate that uninstalling it does not actually uninstall it, that it leaves folders and registry keys scattered around like a shitty houseguest who "forgets" their crap on purpose so they have an excuse to weasel their way back in next week.It is gone, every last fucking trace of it, and good riddance to the whole rotten, presumptuous, half-built piece of shit.  Until Microslop enables it again.
+We hate OneDrive.  We hate that it renames a hostage situation "backup," like quietly relocating someone's files without clearly asking first is some kind of favor instead of the bullshit move it actually is.  We hate that it hides your own damn files from you under a folder it created without permission.  We hate that uninstalling it does not actually uninstall it, that it leaves folders and registry keys scattered around like a shitty houseguest who "forgets" their crap on purpose so they have an excuse to weasel their way back in next week.It is gone, every last fucking trace of it, and good riddance to the whole rotten, presumptuous, half-built piece of shit.  Until Microslop enables it again.
 
 ---
