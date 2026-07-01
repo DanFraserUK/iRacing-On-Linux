@@ -50,6 +50,45 @@ extract_value() {
     done <<<"$text"
 }
 
+# Extract ALL quoted values for a given key name (one per line) —
+# unlike extract_value, which only returns the first match.
+extract_all_values() {
+    local key="$1" text="$2" line
+    while IFS= read -r line; do
+        if [[ "$line" == *"\"${key}\""* ]]; then
+            line="${line#*\"${key}\"}"
+            line="${line#*\"}"
+            echo "${line%\"*}"
+        fi
+    done <<<"$text"
+}
+
+# Return every Steam library base path — the default library plus any
+# additional ones the user has added via Steam's Storage Manager.
+get_steam_libraries() {
+    local vdf="$STEAM_ROOT/steamapps/libraryfolders.vdf"
+    {
+        echo "$STEAM_ROOT"
+        [[ -f "$vdf" ]] && extract_all_values "path" "$(cat "$vdf")"
+    } | sort -u
+}
+
+# Search every Steam library for an existing iRacing common/ folder.
+# Only needed for the Direct Account flow, where we must know exactly
+# where to point the Windows installer's /DIR= switch.
+find_iracing_common_path() {
+    local install_dir="$1" lib candidate
+    while IFS= read -r lib; do
+        [[ -z "$lib" ]] && continue
+        candidate="$lib/steamapps/common/$install_dir"
+        [[ -d "$candidate" ]] && {
+            echo "$candidate"
+            return 0
+        }
+    done < <(get_steam_libraries)
+    return 1
+}
+
 # Show info popup — user clicks OK to continue
 gui_info() {
     zenity --info \
@@ -771,7 +810,13 @@ if [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
 
     gui_open "Checking iRacing game files..."
     INSTALL_DIR=$(extract_value "installdir" "$(cat "$IRACING_ACF")")
-    IRACING_STEAM_PATH="$STEAM_APPS/common/$INSTALL_DIR"
+
+    IRACING_STEAM_PATH=$(find_iracing_common_path "$INSTALL_DIR")
+    if [[ -z "$IRACING_STEAM_PATH" ]]; then
+        # Stub not created anywhere yet — default to the library the
+        # appmanifest lives in, since that's where Steam will create it.
+        IRACING_STEAM_PATH="$STEAM_APPS/common/$INSTALL_DIR"
+    fi
     fully_installed=false
     stub_detected=false
 
@@ -866,25 +911,23 @@ Click OK once the download has finished."
 
         gui_info "Found installer: <tt>$(basename "$INSTALLER_EXE")</tt>
 
-Launching it now via Proton. A Windows-style installer window will appear.
+The installer will now run automatically and install iRacing to the
+correct location in your Steam library:
 
-When the installer asks where to install iRacing, change the path to exactly this:
+<tt>$IRACING_WIN_PATH_DISPLAY</tt>
 
-    <tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>
+No action is needed from you - it will run silently and iRacing will
+NOT be launched automatically when it finishes.
 
-<i>(highlight the line above to copy with CTRL+C, then paste with CTRL+V)</i>
+Click OK to begin."
 
-<b>NOTE: When the installer finishes - do NOT launch iRacing!
-Untick 'Launch iRacing' before closing the installer.</b>
-
-Click OK to launch the installer."
-
-        protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" >"$GENERAL_LOG" 2>&1 &
+        protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" \
+            /SILENT /SUPPRESSMSGBOXES /NORESTART \
+            /DIR="$IRACING_WIN_PATH" \
+            >"$GENERAL_LOG" 2>&1 &
         INSTALL_PID=$!
-        gui_wait $INSTALL_PID "iRacing installer is running...\n\nWhen it finishes - do NOT click Launch iRacing!\nUntick that option before closing the installer."
+        gui_wait $INSTALL_PID "Installing iRacing...\n\nDestination:\n<tt>$IRACING_WIN_PATH_DISPLAY</tt>\n\nThis will take a few minutes, please wait."
         wait "$INSTALL_PID"
-
-        gui_warn "⚠️  Please confirm the iRacing installer has finished, then click OK."
 
         gui_open "Verifying iRacing installation..."
         sleep 0.5
