@@ -86,12 +86,12 @@ Replace [username] with your actual Linux username. The key is to point it to yo
 
 ---
 
-## STEP 6 — Install Required Wine Libraries
+## STEP 6 — Install Required protontricks Libraries
 
 After installation, use protontricks to install required Visual C++ runtimes and other libraries in the Wine prefix:
 
 ```
-$ protontricks --no-bwrap 266410 -q --force vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022 d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact
+$ protontricks --no-bwrap 266410 -q --force vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022 d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact xact_x64 xaudio29
 ```
 
 This step may take several minutes. The output should show each library being verified or installed.
