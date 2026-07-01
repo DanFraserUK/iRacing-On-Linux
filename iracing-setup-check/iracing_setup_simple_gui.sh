@@ -170,38 +170,57 @@ check_not_immutable() {
     # Check known immutable distro IDs
     case "$os_id" in
     steamos)
-        is_immutable=true; detected_name="SteamOS" ;;
+        is_immutable=true
+        detected_name="SteamOS"
+        ;;
     bazzite)
-        is_immutable=true; detected_name="Bazzite" ;;
+        is_immutable=true
+        detected_name="Bazzite"
+        ;;
     nixos)
-        is_immutable=true; detected_name="NixOS" ;;
+        is_immutable=true
+        detected_name="NixOS"
+        ;;
     silverblue | fedora-silverblue)
-        is_immutable=true; detected_name="Fedora Silverblue" ;;
+        is_immutable=true
+        detected_name="Fedora Silverblue"
+        ;;
     kinoite | fedora-kinoite)
-        is_immutable=true; detected_name="Fedora Kinoite" ;;
+        is_immutable=true
+        detected_name="Fedora Kinoite"
+        ;;
     chimeraos)
-        is_immutable=true; detected_name="ChimeraOS" ;;
+        is_immutable=true
+        detected_name="ChimeraOS"
+        ;;
     endless)
-        is_immutable=true; detected_name="Endless OS" ;;
+        is_immutable=true
+        detected_name="Endless OS"
+        ;;
     bluefin | aurora)
-        is_immutable=true; detected_name="$os_name (Universal Blue)" ;;
+        is_immutable=true
+        detected_name="$os_name (Universal Blue)"
+        ;;
     esac
 
     # Also catch Fedora atomic/ostree variants by VARIANT_ID
     if [[ "$is_immutable" == false ]]; then
         case "$variant_id" in
         silverblue | kinoite | sericea | onyx | lazurite | cosmic-atomic)
-            is_immutable=true; detected_name="$os_name (Fedora Atomic)" ;;
+            is_immutable=true
+            detected_name="$os_name (Fedora Atomic)"
+            ;;
         esac
     fi
 
     # Catch any ostree-based system (reliable signal of immutability)
     if [[ "$is_immutable" == false ]] && [[ -d /ostree/repo ]]; then
-        is_immutable=true; detected_name="${os_name:-Unknown} (OSTree-based)"
+        is_immutable=true
+        detected_name="${os_name:-Unknown} (OSTree-based)"
     fi
 
     if [[ "$is_immutable" == true ]]; then
-        cat << EOF
+        cat <<EOF
 
 ╔════════════════════════════════════════════════════════════════════════════╗
 ║              INCOMPATIBLE OPERATING SYSTEM DETECTED                       ║
@@ -327,11 +346,11 @@ check_critical_dependencies() {
         case "$DISTRO_FAMILY" in
         debian) install_cmd="sudo apt update && sudo apt install -y ${missing[*]}" ;;
         fedora) install_cmd="sudo dnf install -y ${missing[*]}" ;;
-        arch)   install_cmd="sudo pacman -S --noconfirm ${missing[*]}" ;;
-        *)      install_cmd="# Please install manually: ${missing[*]}" ;;
+        arch) install_cmd="sudo pacman -S --noconfirm ${missing[*]}" ;;
+        *) install_cmd="# Please install manually: ${missing[*]}" ;;
         esac
 
-        cat << EOF
+        cat <<EOF
 ╔════════════════════════════════════════════════════════════════════════════╗
 ║                    MISSING REQUIRED PACKAGES                              ║
 ╚════════════════════════════════════════════════════════════════════════════╝
@@ -339,7 +358,7 @@ check_critical_dependencies() {
 This script requires the following packages to run:
 EOF
         for pkg in "${missing[@]}"; do echo "  • $pkg"; done
-        cat << EOF
+        cat <<EOF
 
 System: $OS_NAME
 
@@ -898,7 +917,7 @@ rm -f "$PROTONTRICKS_LOG.list"
 
 REQUIRED_PKGS=(
     vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022
-    d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact
+    d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact xact_x64 xaudio29
 )
 
 MISSING=()
