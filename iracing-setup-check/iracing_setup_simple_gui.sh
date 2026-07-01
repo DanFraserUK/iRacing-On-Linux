@@ -244,7 +244,8 @@ check_not_immutable() {
   be installed alongside Steam — Wine libraries, protontricks, and
   custom Proton builds — that cannot be delivered via Flatpak or
   pre-bundled. These must be installed as real system packages, which
-  your OS does not allow.
+  your OS probably will not allow without serious modification of your
+  system which I will not support.
 
   This script cannot automate this process on an immutable system.
   Experienced Linux users may be able to work through the steps
