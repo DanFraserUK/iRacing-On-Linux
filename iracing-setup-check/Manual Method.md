@@ -70,19 +70,46 @@ Save this to an easy-to-locate directory (e.g., ~/Downloads/iracing/).
 
 ## STEP 5 — Run the iRacing Installer via Proton
 
-Using protontricks-launch, run the installer:
+### 5a. Confirm where the iRacing stub was installed
+
+If you only added one Steam library, this will be:
 ```
-$ protontricks-launch --appid 266410 [path/to/installer/iracing-installer.exe]
+~/.steam/steam/steamapps/common/iRacing
 ```
 
-When prompted for the install location, the path could look something like:
+If you added an extra library in Step 3 (a different drive), check that library's `steamapps/common/` folder instead — you can see all your library locations under Steam > Settings > Storage. Whichever one has an `iRacing` folder inside `common/` is the one you'll use below.
+
+**Note:** The ~/.steam/steam path may differ depending on your distro and Steam installation configuration. Adjust accordingly if your Steam library is in a different location.
+
+### 5b. Run the installer, forced to that location
+
+Convert the path from 5a to a Windows-style path by prefixing it with `Z:` and swapping every `/` for `\`. For example:
+
+```
+~/.steam/steam/steamapps/common/iRacing
+```
+
+becomes:
+
 ```
 Z:\home\[username]\.steam\steam\steamapps\common\iRacing
 ```
 
-Replace [username] with your actual Linux username. The key is to point it to your Steam library location and where iRacing is installed. Ensure that iRacing does not appear twice in the path! Do NOT use the default C:\Program Files location. The .bat files require the game to be installed in the Steam library path.
+Then run:
 
-**Note:** The ~/.steam/steam path may differ depending on your distro and Steam installation configuration. These paths in this guide are typical but not necessarily the default for your system. Adjust accordingly if your Steam library is in a different location.
+```
+$ protontricks-launch --appid 266410 [path/to/installer/iracing-installer.exe] \
+    /DIR="Z:\home\[username]\.steam\steam\steamapps\common\iRacing"
+```
+
+The installer window will still open as normal — the `/DIR=` switch just pre-fills and locks in the correct install location, so there's no risk of it landing in the wrong place (like the default `C:\Program Files (x86)`, which the .bat files can't handle).
+
+**NOTE: When the installer finishes - do NOT launch iRacing!
+Untick 'Launch iRacing' before closing the installer.**
+
+### 5c. Confirm it installed correctly
+
+The folder from 5a should now contain `iRacingSim64DX11.exe`, `EasyAntiCheat/`, `cars/`, and `tracks/`. If it looks empty or mostly empty, re-run the command in 5b.
 
 ---
 
@@ -91,7 +118,7 @@ Replace [username] with your actual Linux username. The key is to point it to yo
 After installation, use protontricks to install required Visual C++ runtimes and other libraries in the Wine prefix:
 
 ```
-$ protontricks --no-bwrap 266410 -q --force vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022 d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact xact_x64 xaudio29
+$ protontricks 266410 -q --force vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022 d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact xact_x64 xaudio29
 ```
 
 This step may take several minutes. The output should show each library being verified or installed.
