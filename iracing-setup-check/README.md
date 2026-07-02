@@ -20,7 +20,7 @@ Everything is logged for troubleshooting if needed.
 - **Fedora** / Nobara
 - **Debian**
 
-**Note:** This script will NOT work on immutable Linux distributions.
+**Note:** This script will NOT work on immutable Linux distributions.  Don't even ask for flatpak issues!
 
 ## How to Get and Run the Script
 
