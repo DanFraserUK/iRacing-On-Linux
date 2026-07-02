@@ -20,8 +20,9 @@ Your distro's package manager will need to install protontricks. (winetricks wil
 
 **If you are on Arch / CachyOS / EndeavourOS:**
 ```
-$ yay -S protontricks
+$ sudo pacman -S protontricks
 ```
+(protontricks is in the official `extra` repo — no AUR helper needed)
 
 **If you are on Ubuntu / Debian / Linux Mint:**
 ```

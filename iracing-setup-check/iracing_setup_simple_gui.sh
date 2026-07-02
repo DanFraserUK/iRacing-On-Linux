@@ -41,7 +41,7 @@ extract_value() {
     local key="$1" text="$2" line result
     while IFS= read -r line; do
         if [[ "$line" == *"\"${key}\""* ]]; then
-            line="${line#*\"${key}\"}"
+            line="${line#*\""${key}"\"}"
             line="${line#*\"}"
             result="${line%\"*}"
             echo "$result"
@@ -56,7 +56,7 @@ extract_all_values() {
     local key="$1" text="$2" line
     while IFS= read -r line; do
         if [[ "$line" == *"\"${key}\""* ]]; then
-            line="${line#*\"${key}\"}"
+            line="${line#*\""${key}"\"}"
             line="${line#*\"}"
             echo "${line%\"*}"
         fi
@@ -181,6 +181,11 @@ gui_close() {
     sleep 0.05 # Let window fully close before next one opens
 }
 
+# Safety net: if the script exits unexpectedly (Ctrl+C, gui_error, an
+# unhandled error) while a gui_open pulse window is active, make sure its
+# background loop and the zenity process it feeds don't get left orphaned.
+trap 'gui_close' EXIT INT TERM
+
 # =============================================================================
 # SUDO — password prompt appears in the terminal window
 # =============================================================================
@@ -192,13 +197,11 @@ RUN_AS_ROOT="sudo"
 # =============================================================================
 check_not_immutable() {
     local os_id=""
-    local os_id_like=""
     local os_name=""
     local variant_id=""
 
     if [[ -f /etc/os-release ]]; then
         os_id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
-        os_id_like=$(grep -E '^ID_LIKE=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
         os_name=$(grep -E '^PRETTY_NAME=' /etc/os-release | cut -d= -f2 | tr -d '"')
         variant_id=$(grep -E '^VARIANT_ID=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
     fi
@@ -456,7 +459,16 @@ install_if_missing() {
     local pkg="$1"
     case "$DISTRO_FAMILY" in
     debian)
-        if dpkg -l "$pkg" &>/dev/null; then
+        if [[ "$pkg" == "protontricks" ]]; then
+            # protontricks is installed via pipx on Debian/Ubuntu, not apt,
+            # so check for the actual command rather than dpkg's database.
+            if command -v protontricks &>/dev/null; then
+                log "$pkg already installed"
+                return
+            fi
+        elif dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed"; then
+            # dpkg -s + Status check (not dpkg -l, which returns success even
+            # for a purged/removed package still known to dpkg's database)
             log "$pkg already installed"
             return
         fi
@@ -650,31 +662,38 @@ log "=== Step 4 — Close Steam ==="
 
 # pgrep -x matches the process name exactly — avoids false positives from
 # other apps (e.g. Kate) that have steam file paths in their arguments.
-gui_open "Checking if Steam is running..."
-local_steam_running=false
-pgrep -x steam &>/dev/null && local_steam_running=true
-gui_close
+# Reusable — Steps 5-7 ask the user to reopen Steam to trigger installs, so
+# we need to check and close it again before Step 8's protontricks run.
+ensure_steam_closed() {
+    local msg_first="${1:-<b>Steam needs to be closed before setup can continue.</b>
 
-if $local_steam_running; then
-    gui_warn "<b>Steam needs to be closed before setup can continue.</b>
+Please close Steam yourself now, then click OK.}"
 
-Please close Steam yourself now, then click OK."
-    gui_open "Waiting 10 seconds for Steam to fully shut down..."
-    sleep 10
+    gui_open "Checking if Steam is running..."
+    local steam_running=false
+    pgrep -x steam &>/dev/null && steam_running=true
     gui_close
-    if pgrep -x steam &>/dev/null; then
-        gui_warn "Steam still appears to be running.
 
-Please make sure Steam is fully closed, then click OK."
+    if $steam_running; then
+        gui_warn "$msg_first"
         gui_open "Waiting 10 seconds for Steam to fully shut down..."
         sleep 10
         gui_close
         if pgrep -x steam &>/dev/null; then
-            gui_error "Steam is still running.\n\nPlease close Steam completely and re-run this setup."
+            gui_warn "Steam still appears to be running.
+
+Please make sure Steam is fully closed, then click OK."
+            gui_open "Waiting 10 seconds for Steam to fully shut down..."
+            sleep 10
+            gui_close
+            if pgrep -x steam &>/dev/null; then
+                gui_error "Steam is still running.\n\nPlease close Steam completely and re-run this setup."
+            fi
         fi
     fi
-fi
+}
 
+ensure_steam_closed
 log "Steam is closed"
 
 # =============================================================================
@@ -708,6 +727,10 @@ fi
 # =============================================================================
 # STEP 6 — Steam Purchase: verify game files
 # =============================================================================
+# NOTE: this is a quick sanity check, not an exhaustive file listing.
+# A real iRacing install contains many more files/folders than this — these
+# are just a handful of reliable, always-present items used as a fast way
+# to tell "fully installed" apart from "stub only" or "partial install".
 IRACING_FINGERPRINT=(
     "iRacingSim64DX11.exe"
     "iRacingService64.exe"
@@ -723,7 +746,12 @@ if [[ -n "$IRACING_DEPOT_PURCHASE" ]]; then
 
     gui_open "Checking iRacing game files..."
     INSTALL_DIR=$(extract_value "installdir" "$(cat "$IRACING_ACF")")
-    IRACING_PATH="$STEAM_APPS/common/$INSTALL_DIR"
+    # Search every Steam library, not just the default one — iRacing may be
+    # installed on a secondary drive/library.
+    IRACING_PATH=$(find_iracing_common_path "$INSTALL_DIR")
+    if [[ -z "$IRACING_PATH" ]]; then
+        IRACING_PATH="$STEAM_APPS/common/$INSTALL_DIR"
+    fi
     gui_close
 
     if [[ -d "$IRACING_PATH" ]]; then
@@ -874,8 +902,12 @@ This downloads a small stub (a few MB). Click OK once Steam shows it as installe
             done
         fi
 
-        IRACING_WIN_PATH="${IRACING_STEAM_PATH/#$HOME/Z:\\users\\$USER}"
-        IRACING_WIN_PATH="${IRACING_WIN_PATH//\//\\}"
+        # Under Proton, Z: maps to the real filesystem root "/", so the correct
+        # conversion is always "Z:" + the full path with slashes flipped —
+        # regardless of whether the path lives under $HOME or on another
+        # drive/library entirely. (Previously this only handled $HOME-relative
+        # paths and used the wrong folder name, breaking secondary libraries.)
+        IRACING_WIN_PATH="Z:${IRACING_STEAM_PATH//\//\\}"
         # Convert backslashes to Pango HTML entities so zenity renders them correctly
         IRACING_WIN_PATH_DISPLAY=$(echo "$IRACING_WIN_PATH" | sed 's/\\/\&#92;/g')
 
@@ -953,6 +985,13 @@ fi
 # =============================================================================
 log "=== Step 8 — Proton Libraries ==="
 
+# Steam may have been reopened during Steps 5-7 (installing/verifying
+# iRacing), so re-confirm it's closed before running protontricks.
+ensure_steam_closed "<b>Steam needs to be closed before installing Proton libraries.</b>
+
+Please close Steam now, then click OK."
+log "Steam re-confirmed closed before Step 8"
+
 (protontricks "$IRACING_APPID" list-installed >"$PROTONTRICKS_LOG.list" 2>&1) &
 gui_wait $! "Checking installed Proton libraries..."
 
@@ -1028,7 +1067,7 @@ log "=== Step 9 — Custom Proton Build ==="
 
 mkdir -p "$COMPAT_TOOLS_DIR"
 
-(curl -fsSL "https://api.github.com/repos/DanFraserUK/proton-cachyos/releases" \
+(curl -fsSL "https://api.github.com/repos/DanFraserUK/proton-cachyos/releases/latest" \
     -H "Accept: application/vnd.github+json" -o /tmp/iracing_releases.json 2>>"$GENERAL_LOG") &
 gui_wait $! "Checking for the latest custom Proton build..."
 
@@ -1070,6 +1109,10 @@ else
         gui_error "❌ Download failed.\n\nPlease check your internet connection and try again."
     fi
 
+    # Snapshot existing top-level dirs so we can spot the newly-extracted one
+    # even if the tarball's internal folder name doesn't match its filename.
+    DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+
     (tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR" >>"$GENERAL_LOG" 2>&1) &
     TAR_PID=$!
     gui_wait $TAR_PID "Extracting Proton build...\n\nAlmost done!"
@@ -1078,6 +1121,16 @@ else
     rm -f "$TARBALL_TMP"
 
     [[ $TAR_EXIT -ne 0 ]] && gui_error "❌ Extraction failed.\n\nCheck the log:\n<tt>$GENERAL_LOG</tt>"
+
+    if [[ ! -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
+        DIRS_AFTER=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+        ACTUAL_DIR=$(comm -13 <(echo "$DIRS_BEFORE") <(echo "$DIRS_AFTER") | head -n1)
+        if [[ -n "$ACTUAL_DIR" ]]; then
+            PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
+        else
+            gui_error "❌ Extraction completed but the expected folder wasn't found.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nCheck <tt>$COMPAT_TOOLS_DIR</tt> manually and select the extracted folder as your compatibility tool in Steam."
+        fi
+    fi
 
     gui_info "<b>Custom Proton build installed!</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
     SUMMARY_PROTON_BUILD="Installed ($PROTON_DIR_NAME)"
@@ -1096,7 +1149,30 @@ if [[ ! -f /etc/hosts.bak ]]; then
 fi
 
 HOSTS_ENTRY="0.0.0.0 modules-cdn.eac-prod.on.epicgames.com"
-IRACING_DOCS="$HOME/.local/share/Steam/steamapps/compatdata/266410/pfx/drive_c/users/steamuser/Documents/iRacing"
+
+# The Proton prefix (compatdata) lives in whichever Steam library iRacing was
+# installed to — not necessarily the default library — so search all of them
+# the same way find_iracing_common_path() does, rather than hardcoding a path.
+find_iracing_compatdata_path() {
+    local lib candidate
+    while IFS= read -r lib; do
+        [[ -z "$lib" ]] && continue
+        candidate="$lib/steamapps/compatdata/$IRACING_APPID/pfx/drive_c/users/steamuser/Documents/iRacing"
+        [[ -d "$candidate" ]] && {
+            echo "$candidate"
+            return 0
+        }
+    done < <(get_steam_libraries)
+    return 1
+}
+
+IRACING_DOCS=$(find_iracing_compatdata_path)
+if [[ -z "$IRACING_DOCS" ]]; then
+    # Not created yet in any library — default to where Steam will create it
+    # for the default library, so the "not found yet" message below shows a
+    # sensible path even before the first launch.
+    IRACING_DOCS="$STEAM_APPS/compatdata/$IRACING_APPID/pfx/drive_c/users/steamuser/Documents/iRacing"
+fi
 DOCS_LINK="$HOME/Documents/iRacing"
 
 # --- EAC Workaround ---
@@ -1186,7 +1262,11 @@ fi
 
 gui_info "<b>All done!</b>
 
-<b>Final step - open Steam and do the following:</b>
+<b>If Steam is currently open, fully close and reopen it now.</b>
+New Proton/compatibility tools won't show up in the dropdown below
+until Steam has been restarted.
+
+<b>Final step - in Steam, do the following:</b>
 
 Right-click iRacing -> Properties -> Compatibility
 Tick: <i>Force the use of a specific Steam Play compatibility tool</i>
@@ -1194,5 +1274,7 @@ Select: <b>$PROTON_DIR_NAME</b>$LAUNCH_OPTIONS
 
 This was for you Pabs ❤️
 Open Steam and enjoy your racing!"
+# ^ Dedicated to PabloPGZ — the reason this script exists in the first place.
+# Also just a little joke for whoever runs it. Feel free to leave it in :)
 
 log "Setup complete"
