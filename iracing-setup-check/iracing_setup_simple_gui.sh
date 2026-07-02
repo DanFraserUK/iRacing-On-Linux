@@ -16,7 +16,39 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GENERAL_LOG="$SCRIPT_DIR/danfrasers-iracing-setup.log"
 PROTONTRICKS_LOG="$SCRIPT_DIR/danfrasers-iracing-step8.log"
 : >"$GENERAL_LOG"
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >>"$GENERAL_LOG"; }
+
+# Strip anything that could identify the user from a string before it's
+# logged — the Linux username (both as $HOME's path component and as a
+# bare word, since it shows up on its own inside Windows-style Z:\... paths
+# too) gets replaced with the literal placeholder "<user>". Steam usernames
+# are never logged in the first place (see Step 2), so this only needs to
+# handle the OS-level username.
+redact_path() {
+    local s="$1"
+    [[ -n "$HOME" ]] && s="${s//$HOME//home/<user>}"
+    [[ -n "$USER" ]] && s="${s//$USER/<user>}"
+    echo "$s"
+}
+
+# All logging goes through this — log() itself calls redact_path on every
+# message so a path pasted straight into a log call can never leak the
+# username by accident, even if a future edit forgets to redact by hand.
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $(redact_path "$*")" >>"$GENERAL_LOG"; }
+
+# Runs a command, redacting the user's home directory / username from its
+# combined stdout+stderr before appending it to the given log file — used
+# anywhere raw command output would otherwise bypass log()'s redaction.
+# Capturing stdout too (not just stderr, like the old 2>> redirects did)
+# also means these logs actually show what each tool did, not just errors.
+# Preserves and returns the original command's exit status.
+run_redacted() {
+    local logfile="$1"
+    shift
+    "$@" 2>&1 | while IFS= read -r line || [[ -n "$line" ]]; do
+        redact_path "$line"
+    done >>"$logfile"
+    return "${PIPESTATUS[0]}"
+}
 
 # =============================================================================
 # SUMMARY — populated as each step runs, displayed at the end
@@ -204,6 +236,9 @@ check_not_immutable() {
         os_id=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
         os_name=$(grep -E '^PRETTY_NAME=' /etc/os-release | cut -d= -f2 | tr -d '"')
         variant_id=$(grep -E '^VARIANT_ID=' /etc/os-release | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+        log "os-release: ID=$os_id VARIANT_ID=${variant_id:-<none>} PRETTY_NAME=$os_name"
+    else
+        log "No /etc/os-release found — skipping immutable-OS detection by ID"
     fi
 
     local is_immutable=false
@@ -256,9 +291,14 @@ check_not_immutable() {
     fi
 
     # Catch any ostree-based system (reliable signal of immutability)
-    if [[ "$is_immutable" == false ]] && [[ -d /ostree/repo ]]; then
-        is_immutable=true
-        detected_name="${os_name:-Unknown} (OSTree-based)"
+    if [[ "$is_immutable" == false ]]; then
+        if [[ -d /ostree/repo ]]; then
+            is_immutable=true
+            detected_name="${os_name:-Unknown} (OSTree-based)"
+            log "Immutable-OS check: /ostree/repo present, treating as immutable"
+        else
+            log "Immutable-OS check: no known immutable markers found, continuing"
+        fi
     fi
 
     if [[ "$is_immutable" == true ]]; then
@@ -462,57 +502,79 @@ install_if_missing() {
             # protontricks is installed via pipx on Debian/Ubuntu, not apt,
             # so check for the actual command rather than dpkg's database.
             if command -v protontricks &>/dev/null; then
-                log "$pkg already installed"
+                log "$pkg already installed (found on PATH via pipx)"
                 return
             fi
         elif dpkg -s "$pkg" 2>/dev/null | grep -q "^Status: install ok installed"; then
             # dpkg -s + Status check (not dpkg -l, which returns success even
             # for a purged/removed package still known to dpkg's database)
-            log "$pkg already installed"
+            log "$pkg already installed (dpkg status: install ok installed)"
             return
         fi
-        log "Installing $pkg via apt..."
+        log "$pkg not found — installing via apt-get..."
         (
-            $RUN_AS_ROOT apt-get update -qq 2>>"$GENERAL_LOG"
+            run_redacted "$GENERAL_LOG" $RUN_AS_ROOT apt-get update -qq
             if [[ "$pkg" == "protontricks" ]]; then
-                $RUN_AS_ROOT apt-get install -y pipx 2>>"$GENERAL_LOG"
-                pipx install protontricks 2>>"$GENERAL_LOG"
-                pipx ensurepath 2>>"$GENERAL_LOG"
+                run_redacted "$GENERAL_LOG" $RUN_AS_ROOT apt-get install -y pipx
+                run_redacted "$GENERAL_LOG" pipx install protontricks
+                run_redacted "$GENERAL_LOG" pipx ensurepath
             else
-                $RUN_AS_ROOT apt-get install -y "$pkg" 2>>"$GENERAL_LOG"
+                run_redacted "$GENERAL_LOG" $RUN_AS_ROOT apt-get install -y "$pkg"
             fi
-        ) &
-        gui_wait $! "Installing <b>$pkg</b>...\n\nPlease enter your password in the terminal if prompted."
-        ;;
-    fedora)
-        if rpm -q "$pkg" &>/dev/null; then
-            log "$pkg already installed"
-            return
-        fi
-        log "Installing $pkg via dnf..."
-        (
-            if [[ "$pkg" == "protontricks" ]]; then
-                $RUN_AS_ROOT dnf install -y \
-                    "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
-                    "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm" \
-                    2>>"$GENERAL_LOG" || true
-            fi
-            $RUN_AS_ROOT dnf install -y "$pkg" 2>>"$GENERAL_LOG"
-        ) &
-        gui_wait $! "Installing <b>$pkg</b>...\n\nPlease enter your password in the terminal if prompted."
-        ;;
-    arch)
-        if pacman -Qi "$pkg" &>/dev/null; then
-            log "$pkg already installed"
-            return
-        fi
-        log "Installing $pkg via pacman..."
-        (
-            $RUN_AS_ROOT pacman -S --noconfirm "$pkg" 2>>"$GENERAL_LOG"
         ) &
         local install_pid=$!
         gui_wait $install_pid "Installing <b>$pkg</b>...\n\nPlease enter your password in the terminal if prompted."
-        wait $install_pid || gui_error "❌ Could not install <b>$pkg</b>.\n\nPlease check your internet connection and try again."
+        if wait $install_pid; then
+            log "$pkg installed successfully via apt-get"
+        else
+            local install_exit=$?
+            log "[ERROR] $pkg install via apt-get failed (exit $install_exit) — see $GENERAL_LOG for apt/pipx output"
+            gui_error "❌ Could not install <b>$pkg</b>.\n\nPlease check your internet connection and try again."
+        fi
+        ;;
+    fedora)
+        if rpm -q "$pkg" &>/dev/null; then
+            log "$pkg already installed (rpm -q confirmed)"
+            return
+        fi
+        log "$pkg not found — installing via dnf..."
+        (
+            if [[ "$pkg" == "protontricks" ]]; then
+                run_redacted "$GENERAL_LOG" $RUN_AS_ROOT dnf install -y \
+                    "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+                    "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm" ||
+                    true
+            fi
+            run_redacted "$GENERAL_LOG" $RUN_AS_ROOT dnf install -y "$pkg"
+        ) &
+        local install_pid=$!
+        gui_wait $install_pid "Installing <b>$pkg</b>...\n\nPlease enter your password in the terminal if prompted."
+        if wait $install_pid; then
+            log "$pkg installed successfully via dnf"
+        else
+            local install_exit=$?
+            log "[ERROR] $pkg install via dnf failed (exit $install_exit) — see $GENERAL_LOG for dnf output"
+            gui_error "❌ Could not install <b>$pkg</b>.\n\nPlease check your internet connection and try again."
+        fi
+        ;;
+    arch)
+        if pacman -Qi "$pkg" &>/dev/null; then
+            log "$pkg already installed (pacman -Qi confirmed)"
+            return
+        fi
+        log "$pkg not found — installing via pacman..."
+        (
+            run_redacted "$GENERAL_LOG" $RUN_AS_ROOT pacman -S --noconfirm "$pkg"
+        ) &
+        local install_pid=$!
+        gui_wait $install_pid "Installing <b>$pkg</b>...\n\nPlease enter your password in the terminal if prompted."
+        if wait $install_pid; then
+            log "$pkg installed successfully via pacman"
+        else
+            local install_exit=$?
+            log "[ERROR] $pkg install via pacman failed (exit $install_exit) — see $GENERAL_LOG for pacman output"
+            gui_error "❌ Could not install <b>$pkg</b>.\n\nPlease check your internet connection and try again."
+        fi
         ;;
     esac
 }
@@ -528,13 +590,17 @@ if ! command -v protontricks &>/dev/null; then
     fedora) HINT="Check your RPMFusion installation." ;;
     arch) HINT="Try opening a terminal and running:\n\n<tt>sudo pacman -S protontricks</tt>" ;;
     esac
+    log "[ERROR] protontricks installed but not found on PATH ($DISTRO_FAMILY) — likely a shell PATH issue"
     gui_error "❌ protontricks was installed but can't be found.\n\nThis is usually a PATH issue.\n\n$HINT\n\nThen re-run this setup."
 fi
 
 if ! protontricks --version &>/dev/null; then
+    log "[ERROR] protontricks found on PATH but 'protontricks --version' failed to run"
     gui_error "❌ protontricks is installed but won't run.\n\nCheck the installation and try again."
 fi
 
+PROTONTRICKS_VERSION=$(protontricks --version 2>&1 | head -n1)
+log "Step 1 complete — Steam and protontricks ready (protontricks: $PROTONTRICKS_VERSION)"
 gui_info "<b>Steam and protontricks are installed and ready.</b>"
 SUMMARY_PACKAGES="Already installed"
 
@@ -548,18 +614,23 @@ gui_open "Checking Steam login..."
 LOGIN_VDF="$STEAM_ROOT/config/loginusers.vdf"
 steam_logged_in=false
 
+# Note: STEAM_USER (the Steam persona/display name) is intentionally never
+# written to the log, per the same privacy rule as the Linux username.
 if [[ -f "$LOGIN_VDF" ]] && grep -q '"MostRecent"[[:space:]]*"1"' "$LOGIN_VDF"; then
     STEAM_USER=$(extract_value "PersonaName" "$(cat "$LOGIN_VDF")")
     steam_logged_in=true
-    log "Steam login detected"
+    log "Steam login detected via loginusers.vdf (MostRecent=1 entry found)"
 elif [[ -d "$STEAM_ROOT/userdata" ]] && compgen -G "$STEAM_ROOT/userdata/[0-9]*" >/dev/null 2>&1; then
     steam_logged_in=true
-    log "Steam userdata found"
+    log "loginusers.vdf had no MostRecent entry, but userdata/ has at least one account folder — treating as logged in"
+else
+    log "No Steam login detected yet (no loginusers.vdf MostRecent entry, no userdata/ account folders)"
 fi
 
 gui_close
 
 if ! $steam_logged_in; then
+    log "Steam login not detected — waiting for the user to log in"
     # Record the current timestamp of loginusers.vdf (0 if it doesn't exist yet)
     LOGIN_VDF_MTIME_BEFORE=$(stat -c "%Y" "$LOGIN_VDF" 2>/dev/null || echo "0")
 
@@ -585,6 +656,7 @@ if ! $steam_logged_in; then
             if [[ -f "$LOGIN_VDF" ]] && grep -q '"MostRecent"[[:space:]]*"1"' "$LOGIN_VDF"; then
                 STEAM_USER=$(extract_value "PersonaName" "$(cat "$LOGIN_VDF")")
                 steam_logged_in=true
+                log "Steam login confirmed after loginusers.vdf changed"
                 break
             fi
         fi
@@ -593,6 +665,7 @@ if ! $steam_logged_in; then
         if [[ $attempt -ge 2 ]]; then
             # Two attempts with no change — ask the user what to do
             if ! zenity --question --title="$TITLE" --text="Steam login still not detected.\n\nHave you logged in to Steam? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                log "User quit at Step 2 — Steam login still not detected after 2 attempts"
                 exit 0
             fi
             attempt=0
@@ -606,9 +679,11 @@ if ! $steam_logged_in; then
 fi
 
 if [[ -n "$STEAM_USER" ]]; then
+    log "Step 2 complete — Steam login confirmed"
     gui_info "<b>Steam is logged in</b> as: <b>$STEAM_USER</b>"
     SUMMARY_LOGIN="✓ Logged in"
 else
+    log "Step 2 complete — Steam login confirmed via userdata/ (no persona name available from loginusers.vdf)"
     gui_info "<b>Steam login confirmed.</b>"
     SUMMARY_LOGIN="Login confirmed"
 fi
@@ -625,6 +700,7 @@ IRACING_DEPOT_PURCHASE=""
 IRACING_DEPOT_DIRECT=""
 
 if [[ -f "$IRACING_ACF" ]]; then
+    log "Found appmanifest at $IRACING_ACF"
     if grep -q "266415" "$IRACING_ACF"; then
         IRACING_DEPOT_PURCHASE="266415"
         log "Depot: Steam Purchase (266415)"
@@ -632,10 +708,10 @@ if [[ -f "$IRACING_ACF" ]]; then
         IRACING_DEPOT_DIRECT="266411"
         log "Depot: Direct Account (266411)"
     else
-        log "Depot type undetermined"
+        log "Depot type undetermined — appmanifest exists but matched neither known depot ID"
     fi
 else
-    log "No iRacing ACF found"
+    log "No iRacing appmanifest found at $IRACING_ACF"
 fi
 
 gui_close
@@ -672,6 +748,7 @@ Please close Steam yourself now, then click OK.}"
     local steam_running=false
     pgrep -x steam &>/dev/null && steam_running=true
     gui_close
+    log "ensure_steam_closed: Steam running = $steam_running"
 
     if $steam_running; then
         gui_warn "$msg_first"
@@ -679,6 +756,7 @@ Please close Steam yourself now, then click OK.}"
         sleep 10
         gui_close
         if pgrep -x steam &>/dev/null; then
+            log "ensure_steam_closed: Steam still running after first 10s wait"
             gui_warn "Steam still appears to be running.
 
 Please make sure it's fully closed, then click OK."
@@ -686,14 +764,16 @@ Please make sure it's fully closed, then click OK."
             sleep 10
             gui_close
             if pgrep -x steam &>/dev/null; then
+                log "[ERROR] ensure_steam_closed: Steam still running after second 10s wait, giving up"
                 gui_error "Steam is still running.\n\nPlease close it completely and re-run this setup."
             fi
         fi
+        log "ensure_steam_closed: Steam confirmed closed"
     fi
 }
 
 ensure_steam_closed
-log "Steam is closed"
+log "Step 4 complete — Steam confirmed closed"
 
 # =============================================================================
 # STEP 5 — Confirm iRacing is in Steam library
@@ -701,6 +781,7 @@ log "Steam is closed"
 log "=== Step 5 — iRacing in Steam Library ==="
 
 if [[ -z "$IRACING_ACF" ]] || [[ ! -f "$IRACING_ACF" ]]; then
+    log "iRacing not in Steam library yet — prompting user to add it"
     gui_warn "⚠️  <b>iRacing isn't in your Steam library yet.</b>
 
 If you've got a direct iRacing account, generate a Steam key here:
@@ -713,14 +794,20 @@ Add iRacing to Steam, then click OK to continue."
     gui_close
 
     if [[ -f "$IRACING_ACF" ]]; then
+        log "iRacing appmanifest now found at $IRACING_ACF"
         if grep -q "266415" "$IRACING_ACF"; then
             IRACING_DEPOT_PURCHASE="266415"
+            log "Depot: Steam Purchase (266415)"
         elif grep -q "266411" "$IRACING_ACF"; then
             IRACING_DEPOT_DIRECT="266411"
+            log "Depot: Direct Account (266411)"
         fi
     else
+        log "[ERROR] Step 5 — appmanifest still missing after user prompt, giving up"
         gui_error "❌ Still can't find iRacing in Steam.\n\nPlease restart Steam after adding iRacing, then re-run this setup."
     fi
+else
+    log "Step 5 complete — iRacing already in Steam library"
 fi
 
 # =============================================================================
@@ -750,6 +837,9 @@ if [[ -n "$IRACING_DEPOT_PURCHASE" ]]; then
     IRACING_PATH=$(find_iracing_common_path "$INSTALL_DIR")
     if [[ -z "$IRACING_PATH" ]]; then
         IRACING_PATH="$STEAM_APPS/common/$INSTALL_DIR"
+        log "installdir '$INSTALL_DIR' not found in any known library yet — defaulting to $IRACING_PATH"
+    else
+        log "installdir '$INSTALL_DIR' found at $IRACING_PATH"
     fi
     gui_close
 
@@ -758,14 +848,17 @@ if [[ -n "$IRACING_DEPOT_PURCHASE" ]]; then
         for entry in "${IRACING_FINGERPRINT[@]}"; do
             [[ ! -e "$IRACING_PATH/$entry" ]] && {
                 all_found=false
+                log "Fingerprint check: missing '$entry' — treating install as incomplete"
                 break
             }
         done
 
         if $all_found; then
+            log "Fingerprint check passed — all ${#IRACING_FINGERPRINT[@]} expected items present at $IRACING_PATH"
             gui_info "<b>iRacing game files found and look complete.</b>\n\nLocation: <tt>$IRACING_PATH</tt>"
             SUMMARY_IRACING_FILES="Files complete"
         else
+            log "Prompting user to verify game files via Steam"
             # Watch appmanifest for Steam updating it during verify
             ACF_MTIME_BEFORE=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
 
@@ -783,11 +876,13 @@ Click OK once Steam has finished verifying."
                 gui_close
                 ACF_MTIME_NOW=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
                 if [[ "$ACF_MTIME_NOW" != "$ACF_MTIME_BEFORE" ]]; then
+                    log "appmanifest changed — verification detected as complete"
                     break
                 fi
                 attempt=$((attempt + 1))
                 if [[ $attempt -ge 2 ]]; then
                     if ! zenity --question --title="$TITLE" --text="No changes detected from Steam yet.\n\nHas the verification finished? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                        log "User quit at Step 6 while waiting for Steam verification"
                         exit 0
                     fi
                     attempt=0
@@ -797,6 +892,7 @@ Click OK once Steam has finished verifying."
             SUMMARY_IRACING_FILES="Verified"
         fi
     else
+        log "$IRACING_PATH doesn't exist yet — prompting user to install via Steam"
         # Watch for the directory appearing during Steam install
         ACF_MTIME_BEFORE=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
 
@@ -814,11 +910,13 @@ Click OK once the install is done."
             gui_close
             ACF_MTIME_NOW=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
             if [[ -d "$IRACING_PATH" && "$ACF_MTIME_NOW" != "$ACF_MTIME_BEFORE" ]]; then
+                log "$IRACING_PATH now exists and appmanifest changed — install detected as complete"
                 break
             fi
             attempt=$((attempt + 1))
             if [[ $attempt -ge 2 ]]; then
                 if ! zenity --question --title="$TITLE" --text="iRacing doesn't look installed yet.\n\nHas it finished installing in Steam? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                    log "User quit at Step 6 while waiting for Steam install"
                     exit 0
                 fi
                 attempt=0
@@ -952,19 +1050,21 @@ not launch automatically when it's done.
 
 Click OK to begin."
 
-        protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" \
+        log "Launching Windows installer: $INSTALLER_EXE -> $IRACING_STEAM_PATH"
+        run_redacted "$GENERAL_LOG" protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" \
             /SILENT /SUPPRESSMSGBOXES /NORESTART \
-            /DIR="$IRACING_WIN_PATH" \
-            >"$GENERAL_LOG" 2>&1 &
+            /DIR="$IRACING_WIN_PATH" &
         INSTALL_PID=$!
         gui_wait $INSTALL_PID "Installing iRacing...\n\nDestination:\n<tt>$IRACING_WIN_PATH_DISPLAY</tt>\n\nThis will take a few minutes, please wait."
         wait "$INSTALL_PID"
+        log "Windows installer finished (exit $?)"
 
         gui_open "Verifying iRacing installation..."
         sleep 0.5
         gui_close
 
         if [[ ! -d "$IRACING_STEAM_PATH" ]] || [[ $(find "$IRACING_STEAM_PATH" -maxdepth 1 -type f | wc -l) -le 3 ]]; then
+            log "[ERROR] Post-install check failed — $IRACING_STEAM_PATH missing or looks empty"
             gui_error "iRacing doesn't look like it installed correctly.
 
 Expected location: <tt>$IRACING_STEAM_PATH</tt>
@@ -974,6 +1074,7 @@ Please re-run the installer and make sure the install path is set to:
     <tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>"
         fi
 
+        log "Step 7 complete — install verified at $IRACING_STEAM_PATH"
         gui_info "<b>iRacing installation confirmed!</b>\n\nLocation: <tt>$IRACING_STEAM_PATH</tt>"
         SUMMARY_IRACING_FILES="Installed via Windows installer"
     fi
@@ -991,7 +1092,8 @@ ensure_steam_closed "<b>Steam needs to be closed before installing Proton librar
 Please close Steam now, then click OK."
 log "Steam re-confirmed closed before Step 8"
 
-(protontricks "$IRACING_APPID" list-installed >"$PROTONTRICKS_LOG.list" 2>&1) &
+: >"$PROTONTRICKS_LOG.list"
+(run_redacted "$PROTONTRICKS_LOG.list" protontricks "$IRACING_APPID" list-installed) &
 gui_wait $! "Checking installed Proton libraries..."
 
 INSTALLED_LIST=$(cat "$PROTONTRICKS_LOG.list" 2>/dev/null || true)
@@ -1008,6 +1110,7 @@ for pkg in "${REQUIRED_PKGS[@]}"; do
         MISSING+=("$pkg")
     fi
 done
+log "Proton library check: ${#MISSING[@]} of ${#REQUIRED_PKGS[@]} required libraries missing (${MISSING[*]:-none})"
 
 # original line with both font packages:
 # Install <b>corefonts</b> and <b>allfonts</b>?
@@ -1033,6 +1136,7 @@ Click Yes to install fonts, No to skip."; then
 fi
 
 if [[ ${#MISSING[@]} -eq 0 ]]; then
+    log "Step 8 complete — all ${#REQUIRED_PKGS[@]} required Proton libraries already present"
     gui_info "<b>All required Proton libraries are already installed.</b>"
     SUMMARY_PROTON_LIBS="All ${#REQUIRED_PKGS[@]} libraries already present"
 else
@@ -1045,16 +1149,19 @@ Libraries to install:
 
 Click OK and a progress window will appear."
 
-    protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" >"$PROTONTRICKS_LOG" 2>&1 &
+    : >"$PROTONTRICKS_LOG"
+    run_redacted "$PROTONTRICKS_LOG" protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" &
     PT_PID=$!
     gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
     wait "$PT_PID"
     PT_EXIT=$?
 
     if [[ $PT_EXIT -ne 0 ]]; then
+        log "[ERROR] protontricks force-install failed (exit $PT_EXIT) — see $PROTONTRICKS_LOG"
         gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$PROTONTRICKS_LOG</tt>"
     fi
 
+    log "Step 8 complete — ${#MISSING[@]} Proton libraries installed successfully"
     gui_info "<b>All required Proton libraries are now installed.</b>"
     SUMMARY_PROTON_LIBS="${#MISSING[@]} libraries installed"
 fi
@@ -1066,15 +1173,17 @@ log "=== Step 9 — Custom Proton Build ==="
 
 mkdir -p "$COMPAT_TOOLS_DIR"
 
-(curl -fsSL "https://api.github.com/repos/DanFraserUK/proton-cachyos/releases/latest" \
-    -H "Accept: application/vnd.github+json" -o /tmp/iracing_releases.json 2>>"$GENERAL_LOG") &
+(run_redacted "$GENERAL_LOG" curl -fsSL "https://api.github.com/repos/DanFraserUK/proton-cachyos/releases/latest" \
+    -H "Accept: application/vnd.github+json" -o /tmp/iracing_releases.json) &
 gui_wait $! "Checking for the latest custom Proton build..."
 
 RELEASES_JSON=$(cat /tmp/iracing_releases.json 2>/dev/null)
 rm -f /tmp/iracing_releases.json
 
-[[ -z "$RELEASES_JSON" ]] &&
+if [[ -z "$RELEASES_JSON" ]]; then
+    log "[ERROR] GitHub releases/latest request returned nothing"
     gui_error "❌ Couldn't reach GitHub.\n\nPlease check your internet connection and try again.\n\nManual download:\n<tt>https://github.com/DanFraserUK/proton-cachyos/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
+fi
 
 TARBALL_URL=""
 while IFS= read -r line; do
@@ -1086,51 +1195,63 @@ while IFS= read -r line; do
     fi
 done <<<"$RELEASES_JSON"
 
-[[ -z "$TARBALL_URL" ]] &&
+if [[ -z "$TARBALL_URL" ]]; then
+    log "[ERROR] No .tar.xz browser_download_url found in latest release JSON"
     gui_error "❌ Couldn't find a download link in the latest GitHub release.\n\nPlease download manually:\n<tt>https://github.com/DanFraserUK/proton-cachyos/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
+fi
 
 TARBALL_NAME=$(basename "$TARBALL_URL")
 PROTON_DIR_NAME="${TARBALL_NAME%.tar.xz}"
 TARBALL_TMP="/tmp/$TARBALL_NAME"
+log "Latest release asset: $TARBALL_NAME"
 
 if [[ -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
+    log "Step 9 complete — $PROTON_DIR_NAME already present, skipping download"
     gui_info "<b>Custom Proton build is already installed and up to date.</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
     SUMMARY_PROTON_BUILD="Already installed ($PROTON_DIR_NAME)"
 else
-    (curl -fsSL -o "$TARBALL_TMP" "$TARBALL_URL" >>"$GENERAL_LOG" 2>&1) &
+    (run_redacted "$GENERAL_LOG" curl -fsSL -o "$TARBALL_TMP" "$TARBALL_URL") &
     DL_PID=$!
     gui_wait $DL_PID "Downloading custom Proton build...\n\n<tt>$TARBALL_NAME</tt>"
     wait "$DL_PID"
     DL_EXIT=$?
 
     if [[ $DL_EXIT -ne 0 ]] || [[ ! -s "$TARBALL_TMP" ]]; then
+        log "[ERROR] Proton build download failed (exit $DL_EXIT)"
         rm -f "$TARBALL_TMP"
         gui_error "❌ Download failed.\n\nPlease check your internet connection and try again."
     fi
+    log "Downloaded $TARBALL_NAME successfully"
 
     # Snapshot existing top-level dirs so we can spot the newly-extracted one
     # even if the tarball's internal folder name doesn't match its filename.
     DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
 
-    (tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR" >>"$GENERAL_LOG" 2>&1) &
+    (run_redacted "$GENERAL_LOG" tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR") &
     TAR_PID=$!
     gui_wait $TAR_PID "Extracting Proton build...\n\nAlmost done!"
     wait "$TAR_PID"
     TAR_EXIT=$?
     rm -f "$TARBALL_TMP"
 
-    [[ $TAR_EXIT -ne 0 ]] && gui_error "❌ Extraction failed.\n\nCheck the log:\n<tt>$GENERAL_LOG</tt>"
+    if [[ $TAR_EXIT -ne 0 ]]; then
+        log "[ERROR] tar extraction failed (exit $TAR_EXIT)"
+        gui_error "❌ Extraction failed.\n\nCheck the log:\n<tt>$GENERAL_LOG</tt>"
+    fi
 
     if [[ ! -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
         DIRS_AFTER=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
         ACTUAL_DIR=$(comm -13 <(echo "$DIRS_BEFORE") <(echo "$DIRS_AFTER") | head -n1)
         if [[ -n "$ACTUAL_DIR" ]]; then
+            log "Expected folder name '$PROTON_DIR_NAME' not found after extraction — using actual extracted folder '$(basename "$ACTUAL_DIR")' instead"
             PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
         else
+            log "[ERROR] Extraction finished but no new folder found in $COMPAT_TOOLS_DIR"
             gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nCheck <tt>$COMPAT_TOOLS_DIR</tt> by hand and pick the extracted folder as your compatibility tool in Steam."
         fi
     fi
 
+    log "Step 9 complete — custom Proton build installed as $PROTON_DIR_NAME"
     gui_info "<b>Custom Proton build installed!</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
     SUMMARY_PROTON_BUILD="Installed ($PROTON_DIR_NAME)"
 fi
@@ -1142,9 +1263,11 @@ log "=== Step 10 — Optional Extras ==="
 
 # --- Backup /etc/hosts before touching it ---
 if [[ ! -f /etc/hosts.bak ]]; then
-    ($RUN_AS_ROOT cp /etc/hosts /etc/hosts.bak 2>>"$GENERAL_LOG") &
+    (run_redacted "$GENERAL_LOG" $RUN_AS_ROOT cp /etc/hosts /etc/hosts.bak) &
     gui_wait $! "Backing up /etc/hosts...\n\nPlease enter your password in the terminal if prompted."
-    log "Backed up /etc/hosts"
+    log "Backed up /etc/hosts to /etc/hosts.bak"
+else
+    log "/etc/hosts.bak already exists — skipping backup"
 fi
 
 HOSTS_ENTRY="0.0.0.0 modules-cdn.eac-prod.on.epicgames.com"
@@ -1171,11 +1294,15 @@ if [[ -z "$IRACING_DOCS" ]]; then
     # for the default library, so the "not found yet" message below shows a
     # sensible path even before the first launch.
     IRACING_DOCS="$STEAM_APPS/compatdata/$IRACING_APPID/pfx/drive_c/users/steamuser/Documents/iRacing"
+    log "iRacing Documents folder not found in any library yet — defaulting to $IRACING_DOCS"
+else
+    log "iRacing Documents folder found at $IRACING_DOCS"
 fi
 DOCS_LINK="$HOME/Documents/iRacing"
 
 # --- EAC Workaround ---
 if grep -qF "$HOSTS_ENTRY" /etc/hosts; then
+    log "EAC hosts entry already present in /etc/hosts"
     if gui_question "The EAC (Easy Anti-Cheat) network workaround is already applied.
 
 Want to <b>remove</b> it?"; then
@@ -1187,12 +1314,15 @@ Want to <b>remove</b> it?"; then
             echo -n "$hosts_content" | $RUN_AS_ROOT tee /etc/hosts >/dev/null
         ) &
         gui_wait $! "Removing EAC hosts entry...\n\nPlease enter your password in the terminal if prompted."
+        log "EAC hosts entry removed"
         gui_info "The EAC workaround has been removed from /etc/hosts."
         SUMMARY_EAC="Removed"
     else
+        log "User chose to keep the existing EAC hosts entry"
         SUMMARY_EAC="Already applied (kept)"
     fi
 else
+    log "No EAC hosts entry present — asking user whether to apply it"
     if gui_question "<b>EAC (Easy Anti-Cheat) Network Workaround</b>
 
 This blocks the EAC CDN by adding one line to your /etc/hosts file.
@@ -1203,15 +1333,18 @@ potentially get your account banned.
 Want to apply this workaround?"; then
         (echo "$HOSTS_ENTRY" | $RUN_AS_ROOT tee -a /etc/hosts >/dev/null) &
         gui_wait $! "Applying EAC workaround...\n\nPlease enter your password in the terminal if prompted."
+        log "EAC hosts entry applied"
         gui_info "EAC workaround applied."
         SUMMARY_EAC="Applied"
     else
+        log "User declined the EAC workaround"
         SUMMARY_EAC="Skipped"
     fi
 fi
 
 # --- Documents symlink ---
 if [[ -L "$DOCS_LINK" ]]; then
+    log "~/Documents/iRacing shortcut already exists"
     gui_info "<b>~/Documents/iRacing shortcut already exists.</b>"
     SUMMARY_DOCS="Already exists"
 elif [[ -d "$IRACING_DOCS" && ! -e "$DOCS_LINK" ]]; then
@@ -1224,12 +1357,15 @@ deep inside a hidden folder.  Want a shortcut created at:
 
 This makes it easy to get to your setups and replays."; then
         ln -s "$IRACING_DOCS" "$DOCS_LINK"
+        log "Documents shortcut created"
         gui_info "Shortcut created at <tt>~/Documents/iRacing</tt>"
         SUMMARY_DOCS="Created"
     else
+        log "User declined the Documents shortcut"
         SUMMARY_DOCS="Skipped"
     fi
 else
+    log "iRacing Documents folder doesn't exist yet — can't offer the shortcut"
     gui_warn "iRacing's Documents folder doesn't exist yet.\n\nLaunch iRacing once to create it, then you can make the shortcut by hand:\n\n<tt>ln -s \"$IRACING_DOCS\" \"$DOCS_LINK\"</tt>"
     SUMMARY_DOCS="Not yet - launch iRacing first"
 fi
@@ -1251,6 +1387,7 @@ SUMMARY_TEXT="<b>Setup Summary</b>
 <tt>Documents shortcut    </tt>${SUMMARY_DOCS}
 <tt>─────────────────────────────────────────────────────</tt>"
 
+log "Setup summary — packages: $SUMMARY_PACKAGES | login: $SUMMARY_LOGIN | type: $SUMMARY_IRACING_TYPE | files: $SUMMARY_IRACING_FILES | proton libs: $SUMMARY_PROTON_LIBS | proton build: $SUMMARY_PROTON_BUILD | EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
 gui_info "$SUMMARY_TEXT"
 
 if [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
@@ -1276,4 +1413,4 @@ Open Steam and enjoy your racing!"
 # ^ Dedicated to PabloPGZ — the reason this script exists in the first place.
 # Also just a little joke for whoever runs it.  Feel free to leave it in :)
 
-log "Setup complete"
+log "Setup complete — compatibility tool: $PROTON_DIR_NAME"
