@@ -270,32 +270,31 @@ check_not_immutable() {
 
   Detected: $detected_name
 
-  This script cannot set up iRacing on your system.
+  This script can't set up iRacing on your system.
 
   WHY:
 
-  Your operating system is immutable. This means the core filesystem is
+  Your operating system is immutable.  That means the core filesystem is
   read-only and locked against modification.
 
-  You may have noticed that Steam itself works fine on your system —
-  this is because Steam is either pre-installed as part of your OS, or
-  installed as a self-contained Flatpak. Neither requires touching the
-  system filesystem.
+  You've probably noticed Steam itself works fine — that's because Steam
+  is either pre-installed as part of your OS, or runs as a self-contained
+  Flatpak.  Neither one needs to touch the system filesystem.
 
-  iRacing is different. It requires additional system-level packages to
-  be installed alongside Steam — Wine libraries, protontricks, and
-  custom Proton builds — that cannot be delivered via Flatpak or
-  pre-bundled. These must be installed as real system packages, which
-  your OS probably will not allow without serious modification of your
-  system which I will not support.
+  iRacing is different.  It needs additional system-level packages
+  alongside Steam — Wine libraries, protontricks, and a custom Proton
+  build — none of which can be delivered via Flatpak or pre-bundled.
+  These have to be installed as real system packages, which your OS
+  almost certainly won't allow without seriously modifying the system,
+  and that's not something I'm going to support here.
 
-  This script cannot automate this process on an immutable system.
-  Experienced Linux users may be able to work through the steps
-  manually using containers or OS-specific workarounds, but this is
-  complex, unsupported, and well outside the scope of this script.
+  This script can't automate any of that on an immutable system.
+  Experienced Linux users might be able to work through it manually
+  using containers or OS-specific workarounds, but that's complex,
+  unsupported, and well outside what this script does.
 
-  To use this script to set up and run iRacing on Linux, you need a
-  standard (mutable) distribution such as:
+  To use this script, you'll need a standard (mutable) distribution,
+  such as:
 
     • Arch Linux / CachyOS / EndeavourOS
     • Ubuntu / Linux Mint / Pop!_OS
@@ -398,7 +397,7 @@ check_critical_dependencies() {
 ║                    MISSING REQUIRED PACKAGES                              ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 
-This script requires the following packages to run:
+This script needs the following packages to run:
 EOF
         for pkg in "${missing[@]}"; do echo "  • $pkg"; done
         cat <<EOF
@@ -411,10 +410,10 @@ TO INSTALL, COPY & PASTE THIS COMMAND:
 
 WHAT TO DO NEXT:
 
-1. Open a terminal window
-2. Copy the command above and press Enter
-3. Wait for installation to complete
-4. Run this script again
+1. Open a terminal window.
+2. Copy the command above and press Enter.
+3. Wait for the install to finish.
+4. Run this script again.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
@@ -437,8 +436,8 @@ gui_info "<b>iRacing Setup for Linux</b>
 
 Detected OS: <b>$OS_NAME</b>
 
-This tool will walk you through setting up iRacing on Linux.
-It assumes a standard fresh install:
+This tool walks you through setting up iRacing on Linux.  It assumes a
+standard fresh install:
 
   • Steam is installed in the default location
   • iRacing is in your default Steam library
@@ -529,11 +528,11 @@ if ! command -v protontricks &>/dev/null; then
     fedora) HINT="Check your RPMFusion installation." ;;
     arch) HINT="Try opening a terminal and running:\n\n<tt>sudo pacman -S protontricks</tt>" ;;
     esac
-    gui_error "❌ protontricks was installed but cannot be found.\n\nThis is usually a PATH issue.\n\n$HINT\n\nThen re-run this setup."
+    gui_error "❌ protontricks was installed but can't be found.\n\nThis is usually a PATH issue.\n\n$HINT\n\nThen re-run this setup."
 fi
 
 if ! protontricks --version &>/dev/null; then
-    gui_error "❌ protontricks is installed but cannot run.\n\nCheck the installation and try again."
+    gui_error "❌ protontricks is installed but won't run.\n\nCheck the installation and try again."
 fi
 
 gui_info "<b>Steam and protontricks are installed and ready.</b>"
@@ -564,7 +563,7 @@ if ! $steam_logged_in; then
     # Record the current timestamp of loginusers.vdf (0 if it doesn't exist yet)
     LOGIN_VDF_MTIME_BEFORE=$(stat -c "%Y" "$LOGIN_VDF" 2>/dev/null || echo "0")
 
-    gui_warn "Steam does not appear to be logged in.\n\nPlease open Steam and log into your account, then click OK to continue."
+    gui_warn "Steam doesn't appear to be logged in.\n\nPlease open Steam and log into your account, then click OK to continue."
 
     # Check if the file has been updated since we first looked — if so, Steam wrote new login data
     check_login_updated() {
@@ -648,10 +647,10 @@ elif [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
     gui_info "<b>iRacing detected as a Direct Account / Generated Steam Key.</b>"
     SUMMARY_IRACING_TYPE="Direct Account / Steam Key"
 elif [[ ! -f "$IRACING_ACF" ]]; then
-    gui_warn "iRacing was not found in your Steam library."
+    gui_warn "iRacing wasn't found in your Steam library."
     SUMMARY_IRACING_TYPE="Not found in library"
 else
-    gui_warn "iRacing was found but the account type could not be determined.\n\nSetup will continue anyway."
+    gui_warn "iRacing was found, but I couldn't figure out the account type.\n\nSetup will carry on anyway."
     SUMMARY_IRACING_TYPE="Found - type undetermined"
 fi
 
@@ -682,12 +681,12 @@ Please close Steam yourself now, then click OK.}"
         if pgrep -x steam &>/dev/null; then
             gui_warn "Steam still appears to be running.
 
-Please make sure Steam is fully closed, then click OK."
+Please make sure it's fully closed, then click OK."
             gui_open "Waiting 10 seconds for Steam to fully shut down..."
             sleep 10
             gui_close
             if pgrep -x steam &>/dev/null; then
-                gui_error "Steam is still running.\n\nPlease close Steam completely and re-run this setup."
+                gui_error "Steam is still running.\n\nPlease close it completely and re-run this setup."
             fi
         fi
     fi
@@ -702,9 +701,9 @@ log "Steam is closed"
 log "=== Step 5 — iRacing in Steam Library ==="
 
 if [[ -z "$IRACING_ACF" ]] || [[ ! -f "$IRACING_ACF" ]]; then
-    gui_warn "⚠️  <b>iRacing is not in your Steam library yet.</b>
+    gui_warn "⚠️  <b>iRacing isn't in your Steam library yet.</b>
 
-If you have a direct iRacing account, generate a Steam key here:
+If you've got a direct iRacing account, generate a Steam key here:
 <tt>https://support.iracing.com/support/solutions/articles/31000165400</tt>
 
 Add iRacing to Steam, then click OK to continue."
@@ -720,7 +719,7 @@ Add iRacing to Steam, then click OK to continue."
             IRACING_DEPOT_DIRECT="266411"
         fi
     else
-        gui_error "❌ iRacing still not found in Steam.\n\nPlease restart Steam after adding iRacing, then re-run this setup."
+        gui_error "❌ Still can't find iRacing in Steam.\n\nPlease restart Steam after adding iRacing, then re-run this setup."
     fi
 fi
 
@@ -801,12 +800,12 @@ Click OK once Steam has finished verifying."
         # Watch for the directory appearing during Steam install
         ACF_MTIME_BEFORE=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
 
-        gui_warn "<b>iRacing has not been downloaded yet.</b>
+        gui_warn "<b>iRacing hasn't been downloaded yet.</b>
 
 Please open Steam and install it:
 <b>Library -> iRacing -> Install</b>
 
-Click OK once the installation is complete."
+Click OK once the install is done."
 
         attempt=0
         while true; do
@@ -819,7 +818,7 @@ Click OK once the installation is complete."
             fi
             attempt=$((attempt + 1))
             if [[ $attempt -ge 2 ]]; then
-                if ! zenity --question --title="$TITLE" --text="iRacing doesn't appear to have installed yet.\n\nHas the installation finished in Steam? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                if ! zenity --question --title="$TITLE" --text="iRacing doesn't look installed yet.\n\nHas it finished installing in Steam? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
                     exit 0
                 fi
                 attempt=0
@@ -880,7 +879,7 @@ if [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
 Please open Steam and install iRacing:
 <b>Library -> iRacing -> Install</b>
 
-This downloads a small stub (a few MB). Click OK once Steam shows it as installed."
+This just downloads a small stub, a few MB.  Click OK once Steam shows it as installed."
 
             attempt=0
             while true; do
@@ -911,21 +910,21 @@ This downloads a small stub (a few MB). Click OK once Steam shows it as installe
         # Convert backslashes to Pango HTML entities so zenity renders them correctly
         IRACING_WIN_PATH_DISPLAY=$(echo "$IRACING_WIN_PATH" | sed 's/\\/\&#92;/g')
 
-        gui_info "<b>iRacing stub detected - the full game files are not installed yet.</b>
+        gui_info "<b>iRacing stub detected — the full game files aren't installed yet.</b>
 
-You need to run the iRacing Windows installer. Here's what to do:
+You'll need to run the iRacing Windows installer.  Here's what to do:
 
-<b>Step 1:</b> Download the installer - click the link to open in your browser:
+<b>Step 1:</b> Download the installer — click the link to open it in your browser:
 <a href='https://members.iracing.com/download/member/noservice.jsp'>https://members.iracing.com/download/member/noservice.jsp</a>
 
 <b>Step 2:</b> Save it to your Downloads folder.
 The filename looks like: <tt>iRacingInstaller_win_YYYY.MM.DD.exe</tt>
 
-<tt>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</tt>
-<b>  Wait for the download to fully complete before clicking OK.</b>
-<tt>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</tt>
+<tt>──────────────────────────────────────────────────</tt>
+<b>  Wait for the download to fully finish before clicking OK.</b>
+<tt>──────────────────────────────────────────────────</tt>
 
-Click OK once the download has finished."
+Click OK once the download's finished."
 
         while true; do
             gui_open "Looking for iRacing installer in Downloads..."
@@ -943,13 +942,13 @@ Click OK once the download has finished."
 
         gui_info "Found installer: <tt>$(basename "$INSTALLER_EXE")</tt>
 
-The installer will now run automatically and install iRacing to the
+The installer will now run on its own and install iRacing to the
 correct location in your Steam library:
 
 <tt>$IRACING_WIN_PATH_DISPLAY</tt>
 
-No action is needed from you - it will run silently and iRacing will
-NOT be launched automatically when it finishes.
+No action needed from you — it runs silently, and iRacing will
+not launch automatically when it's done.
 
 Click OK to begin."
 
@@ -966,11 +965,11 @@ Click OK to begin."
         gui_close
 
         if [[ ! -d "$IRACING_STEAM_PATH" ]] || [[ $(find "$IRACING_STEAM_PATH" -maxdepth 1 -type f | wc -l) -le 3 ]]; then
-            gui_error "iRacing doesn't appear to have installed correctly.
+            gui_error "iRacing doesn't look like it installed correctly.
 
 Expected location: <tt>$IRACING_STEAM_PATH</tt>
 
-Please re-run the installer and make sure you set the install path to:
+Please re-run the installer and make sure the install path is set to:
 
     <tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>"
         fi
@@ -1016,8 +1015,8 @@ if gui_question "  <b>Optional Fonts</b>
 
 Install <b>corefonts</b>?
 
-These are not required to play iRacing, but without them you may see
-text rendering issues in-game or in the UI.
+These aren't required to play iRacing, but without them you might see
+text rendering oddly in-game or in the UI.
 
 ⚠️  Warning: installing these can take a very long time.
 
@@ -1039,7 +1038,7 @@ if [[ ${#MISSING[@]} -eq 0 ]]; then
 else
     gui_info "⏳ <b>Installing ${#MISSING[@]} Proton library/libraries...</b>
 
-This may take several minutes.
+This can take several minutes.
 
 Libraries to install:
 <tt>${MISSING[*]}</tt>
@@ -1048,12 +1047,12 @@ Click OK and a progress window will appear."
 
     protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" >"$PROTONTRICKS_LOG" 2>&1 &
     PT_PID=$!
-    gui_wait $PT_PID "Installing Proton libraries...\n\nThis may take several minutes, please wait."
+    gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
     wait "$PT_PID"
     PT_EXIT=$?
 
     if [[ $PT_EXIT -ne 0 ]]; then
-        gui_error "❌ protontricks encountered an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$PROTONTRICKS_LOG</tt>"
+        gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$PROTONTRICKS_LOG</tt>"
     fi
 
     gui_info "<b>All required Proton libraries are now installed.</b>"
@@ -1075,7 +1074,7 @@ RELEASES_JSON=$(cat /tmp/iracing_releases.json 2>/dev/null)
 rm -f /tmp/iracing_releases.json
 
 [[ -z "$RELEASES_JSON" ]] &&
-    gui_error "❌ Could not reach GitHub.\n\nPlease check your internet connection and try again.\n\nManual download:\n<tt>https://github.com/DanFraserUK/proton-cachyos/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
+    gui_error "❌ Couldn't reach GitHub.\n\nPlease check your internet connection and try again.\n\nManual download:\n<tt>https://github.com/DanFraserUK/proton-cachyos/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
 
 TARBALL_URL=""
 while IFS= read -r line; do
@@ -1088,7 +1087,7 @@ while IFS= read -r line; do
 done <<<"$RELEASES_JSON"
 
 [[ -z "$TARBALL_URL" ]] &&
-    gui_error "❌ Could not find a download link in the latest GitHub release.\n\nPlease download manually:\n<tt>https://github.com/DanFraserUK/proton-cachyos/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
+    gui_error "❌ Couldn't find a download link in the latest GitHub release.\n\nPlease download manually:\n<tt>https://github.com/DanFraserUK/proton-cachyos/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
 
 TARBALL_NAME=$(basename "$TARBALL_URL")
 PROTON_DIR_NAME="${TARBALL_NAME%.tar.xz}"
@@ -1128,7 +1127,7 @@ else
         if [[ -n "$ACTUAL_DIR" ]]; then
             PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
         else
-            gui_error "❌ Extraction completed but the expected folder wasn't found.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nCheck <tt>$COMPAT_TOOLS_DIR</tt> manually and select the extracted folder as your compatibility tool in Steam."
+            gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nCheck <tt>$COMPAT_TOOLS_DIR</tt> by hand and pick the extracted folder as your compatibility tool in Steam."
         fi
     fi
 
@@ -1179,7 +1178,7 @@ DOCS_LINK="$HOME/Documents/iRacing"
 if grep -qF "$HOSTS_ENTRY" /etc/hosts; then
     if gui_question "The EAC (Easy Anti-Cheat) network workaround is already applied.
 
-Do you want to <b>remove</b> it?"; then
+Want to <b>remove</b> it?"; then
         (
             hosts_content=""
             while IFS= read -r hosts_line; do
@@ -1188,7 +1187,7 @@ Do you want to <b>remove</b> it?"; then
             echo -n "$hosts_content" | $RUN_AS_ROOT tee /etc/hosts >/dev/null
         ) &
         gui_wait $! "Removing EAC hosts entry...\n\nPlease enter your password in the terminal if prompted."
-        gui_info "EAC workaround has been removed from /etc/hosts."
+        gui_info "The EAC workaround has been removed from /etc/hosts."
         SUMMARY_EAC="Removed"
     else
         SUMMARY_EAC="Already applied (kept)"
@@ -1198,10 +1197,10 @@ else
 
 This blocks the EAC CDN by adding one line to your /etc/hosts file.
 
-<b>!! AT YOUR OWN RISK:</b> circumventing anti-cheat software could
-potentially result in your account being banned.
+<b>!! At your own risk:</b> circumventing anti-cheat software could
+potentially get your account banned.
 
-Do you want to apply this workaround?"; then
+Want to apply this workaround?"; then
         (echo "$HOSTS_ENTRY" | $RUN_AS_ROOT tee -a /etc/hosts >/dev/null) &
         gui_wait $! "Applying EAC workaround...\n\nPlease enter your password in the terminal if prompted."
         gui_info "EAC workaround applied."
@@ -1219,11 +1218,11 @@ elif [[ -d "$IRACING_DOCS" && ! -e "$DOCS_LINK" ]]; then
     if gui_question "<b>iRacing Documents Shortcut</b>
 
 Steam on Linux stores your iRacing settings, car setups, and replays
-deep inside a hidden folder. Would you like a shortcut created at:
+deep inside a hidden folder.  Want a shortcut created at:
 
 <tt>~/Documents/iRacing</tt>
 
-This makes it easy to access your setups and replays."; then
+This makes it easy to get to your setups and replays."; then
         ln -s "$IRACING_DOCS" "$DOCS_LINK"
         gui_info "Shortcut created at <tt>~/Documents/iRacing</tt>"
         SUMMARY_DOCS="Created"
@@ -1231,7 +1230,7 @@ This makes it easy to access your setups and replays."; then
         SUMMARY_DOCS="Skipped"
     fi
 else
-    gui_warn "iRacing documents folder not found yet.\n\nLaunch iRacing once to create it, then you can create the shortcut manually:\n\n<tt>ln -s \"$IRACING_DOCS\" \"$DOCS_LINK\"</tt>"
+    gui_warn "iRacing's Documents folder doesn't exist yet.\n\nLaunch iRacing once to create it, then you can make the shortcut by hand:\n\n<tt>ln -s \"$IRACING_DOCS\" \"$DOCS_LINK\"</tt>"
     SUMMARY_DOCS="Not yet - launch iRacing first"
 fi
 
@@ -1262,11 +1261,11 @@ fi
 
 gui_info "<b>All done!</b>
 
-<b>If Steam is currently open, fully close and reopen it now.</b>
+<b>If Steam is currently open, fully close it and reopen it now.</b>
 New Proton/compatibility tools won't show up in the dropdown below
-until Steam has been restarted.
+until Steam's been restarted.
 
-<b>Final step - in Steam, do the following:</b>
+<b>Final step — in Steam, do the following:</b>
 
 Right-click iRacing -> Properties -> Compatibility
 Tick: <i>Force the use of a specific Steam Play compatibility tool</i>
@@ -1275,6 +1274,6 @@ Select: <b>$PROTON_DIR_NAME</b>$LAUNCH_OPTIONS
 This was for you Pabs ❤️
 Open Steam and enjoy your racing!"
 # ^ Dedicated to PabloPGZ — the reason this script exists in the first place.
-# Also just a little joke for whoever runs it. Feel free to leave it in :)
+# Also just a little joke for whoever runs it.  Feel free to leave it in :)
 
 log "Setup complete"
