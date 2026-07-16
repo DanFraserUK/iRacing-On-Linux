@@ -9,7 +9,7 @@
 # suffix if shipping more than once in a day). Bump it on every change
 # and tag the matching commit (e.g. `git tag v2026.07.14`) — the version
 # is logged as the very first line of every run, so any log a user sends
-# in tells you at a glance which revision produced it.
+# in shows at a glance which revision produced it.
 SCRIPT_VERSION="2026.07.14"
 SCRIPT_START_TS=$(date +%s)
 
@@ -414,8 +414,8 @@ get_steam_libraries() {
 }
 
 # Search every Steam library for an existing iRacing common/ folder.
-# Only needed for the Direct Account flow, where we must know exactly
-# where to point the Windows installer's /DIR= switch.
+# Only needed for the Direct Account flow, where the exact install path
+# must be known to point the Windows installer's /DIR= switch correctly.
 find_iracing_common_path() {
     local install_dir="$1" lib candidate
     while IFS= read -r lib; do
@@ -1127,7 +1127,7 @@ if ! $steam_logged_in; then
 
     gui_warn "Steam doesn't appear to be logged in.\n\nPlease open Steam and log into your account, then click OK to continue."
 
-    # Check if the file has been updated since we first looked — if so, Steam wrote new login data
+    # Check if the file has changed since the first check — if so, Steam wrote new login data
     check_login_updated() {
         local current_mtime
         current_mtime=$(stat -c "%Y" "$LOGIN_VDF" 2>/dev/null || echo "0")
@@ -1295,10 +1295,10 @@ else
     detect_iracing_depot
 fi
 
-# appmanifest exists but we still don't know Purchase vs Direct — ask the
-# user to check Steam directly rather than silently skipping installation
-# entirely (which is what used to happen: neither Step 5 nor Step 6 would
-# run if depot detection came back empty).
+# appmanifest exists but the depot type (Purchase vs Direct) still isn't
+# known — ask the user to check Steam directly rather than silently
+# skipping installation entirely (which is what used to happen: neither
+# Step 5 nor Step 6 would run if depot detection came back empty).
 if [[ -z "$IRACING_DEPOT_PURCHASE" && -z "$IRACING_DEPOT_DIRECT" ]]; then
     log "[WARN] Step 4 — appmanifest present but depot type undetermined; asking user to verify"
     gui_warn "iRacing was found in your library, but I couldn't confirm what's actually installed yet.
@@ -1572,7 +1572,7 @@ Click OK to open the download page and continue."
         # just the most recently modified file — a stray older copy dragged
         # into Downloads (or a leftover partial download) shouldn't win
         # just because of its mtime. Filenames look like
-        # iRacingInstaller_win_YYYY.MM.DD.NN.exe — we sort on the
+        # iRacingInstaller_win_YYYY.MM.DD.NN.exe — sorted on the
         # YYYY.MM.DD.NN portion numerically, dot-field by dot-field.
         find_latest_iracing_installer() {
             local f best="" best_key=""
@@ -1781,8 +1781,8 @@ mkdir -p "$COMPAT_TOOLS_DIR"
 # at 60 unauthenticated requests/hour per source IP, which is easy to hit
 # on shared/NAT'd connections (or just from repeatedly testing this
 # script). github.com/<repo>/releases/latest is a plain web redirect, not
-# part of the API, and isn't subject to that limit. We resolve the tag
-# from the redirect's Location header, then build the asset URL by
+# part of the API, and isn't subject to that limit. The tag is resolved
+# from the redirect's Location header, then the asset URL is built by
 # convention (tag name == archive base name) instead of asking the API
 # to enumerate release assets.
 GH_REPO="DanFraserUK/proton-cachyos"
@@ -1859,8 +1859,9 @@ if $NEED_PROTON_DOWNLOAD; then
     TARBALL_SIZE_MB=$(du -sm "$TARBALL_TMP" 2>/dev/null | cut -f1)
     log "Downloaded $TARBALL_NAME successfully (${TARBALL_SIZE_MB:-unknown} MB in ${DL_ELAPSED}s)"
 
-    # Snapshot existing top-level dirs so we can spot the newly-extracted one
-    # even if the tarball's internal folder name doesn't match its filename.
+    # Snapshot existing top-level dirs so the newly-extracted one can be
+    # spotted even if the tarball's internal folder name doesn't match its
+    # filename.
     DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
 
     (run_redacted "$TECH_LOG" tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR") &
@@ -1929,8 +1930,8 @@ fi
 # actually landed, and restores from a fresh backup if anything looks
 # wrong. Falls back to manual instructions on the final screen for
 # anything it can't safely automate — most notably if CompatToolMapping
-# doesn't exist in config.vdf at all yet, in which case we deliberately
-# don't try to construct that nesting from scratch.
+# doesn't exist in config.vdf at all yet, in which case this deliberately
+# avoids constructing that nesting from scratch.
 log "=== Step 9 — Auto-Configuring Compatibility Tool & Launch Options ==="
 
 SUMMARY_COMPAT_CONFIG="Not attempted"
