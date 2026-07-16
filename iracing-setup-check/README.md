@@ -34,6 +34,8 @@ Everything is logged for troubleshooting if needed.
 
 Right-click the `iracing_setup_simple_gui.sh` file and select **Properties** or **Permissions**, then check the box that says **Allow executing file as program** (or similar).
 
+You can also do this manually by using the terminal, navigating to where the script is and typing `chmod +x iracing_setup_simple_gui.sh` and pressing enter (you can then close the terminal).
+
 ### Run the Script
 
 Double-click the `iracing_setup_simple_gui.sh` file to start it.
