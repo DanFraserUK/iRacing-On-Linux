@@ -10,14 +10,50 @@
 # and tag the matching commit (e.g. `git tag v2026.07.24`) — the version
 # is logged as the very first line of every run, so any log a user sends
 # in tells you at a glance which revision produced it.
-SCRIPT_VERSION="2026.08.03"
+SCRIPT_VERSION="2026.08.03.13"
 SCRIPT_START_TS=$(date +%s)
+
+# --- Arguments ---
+# Dry run walks the entire flow, doing every check and showing every
+# dialog, but skipping anything that writes to disk, installs a package,
+# or launches Proton. Every skipped action is logged with a DRY-RUN
+# prefix, so a dry run log reads as the list of what a real run would
+# have done. Exists because every other way of testing this script means
+# testing it against somebody's real Steam install.
+DRY_RUN=false
+TEST_MODE=false
+for arg in "$@"; do
+    case "$arg" in
+    -d | --dryrun | --dry-run)
+        DRY_RUN=true
+        ;;
+    -t | --test)
+        TEST_MODE=true
+        ;;
+    -h | --help)
+        echo "iRacing Setup — Simple Edition (v$SCRIPT_VERSION)"
+        echo
+        echo "  usage: $(basename "$0") [-d|--dryrun] [-t|--test]"
+        echo
+        echo "  -d, --dryrun   Walk the whole flow without changing anything"
+        echo "  -t, --test     Report on an existing install and exit"
+        echo "  -h, --help     Show this message"
+        exit 0
+        ;;
+    *)
+        echo "Unknown argument: $arg (try --help)" >&2
+        exit 1
+        ;;
+    esac
+done
 
 # --- Paths ---
 STEAM_ROOT="$HOME/.steam/steam"
 STEAM_APPS="$STEAM_ROOT/steamapps"
 COMPAT_TOOLS_DIR="$STEAM_ROOT/compatibilitytools.d"
 IRACING_APPID="266410"
+# Resolved properly (locale-aware) once the helpers are defined, below.
+DOWNLOADS_DIR="$HOME/Downloads"
 
 # =============================================================================
 # LOCKFILE — refuse to run a second instance alongside a first. Matters
@@ -56,7 +92,11 @@ trap 'rm -f "$LOCKFILE" 2>/dev/null' EXIT INT TERM
 # --- Log ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GENERAL_LOG="$SCRIPT_DIR/danfrasers-iracing-setup.log"
-PROTONTRICKS_LOG="$SCRIPT_DIR/danfrasers-iracing-step7.log"
+# Named for what it holds rather than which step number produces it —
+# step numbers move, and a log called "step7" that's written by Step 10
+# is worse than no hint at all.
+PROTONTRICKS_LOG="$SCRIPT_DIR/danfrasers-iracing-protontricks.log"
+PROTON_BOOTSTRAP_LOG="$SCRIPT_DIR/danfrasers-iracing-prefix.log"
 # Raw subprocess output (package manager chatter, wine/proton debug spew
 # from launching the Windows installer, curl/tar output, etc) goes here
 # instead of $GENERAL_LOG — GENERAL_LOG should only ever contain this
@@ -76,7 +116,7 @@ redact_path() {
     local s="$1"
     [[ -n "$HOME" ]] && s="${s//$HOME//home/<user>}"
     [[ -n "$USER" ]] && s="${s//$USER/<user>}"
-    # STEAMID3 (set in Step 9, once resolved) is a persistent per-account
+    # STEAMID3 (set in Step 11, once resolved) is a persistent per-account
     # identifier — same sensitivity bucket as a username, so it gets the
     # same blanket treatment rather than relying on every call site to
     # remember not to log it.
@@ -90,6 +130,7 @@ redact_path() {
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $(redact_path "$*")" >>"$GENERAL_LOG"; }
 
 log "=== iRacing Setup v$SCRIPT_VERSION starting ==="
+$DRY_RUN && log "=== DRY RUN — nothing will be installed, downloaded or written ==="
 
 # Runs a command, redacting the user's home directory / username from its
 # combined stdout+stderr before appending it to the given log file — used
@@ -115,6 +156,7 @@ SUMMARY_IRACING_TYPE=""
 SUMMARY_IRACING_FILES=""
 SUMMARY_PROTON_LIBS=""
 SUMMARY_PROTON_BUILD=""
+SUMMARY_PREFIX=""
 SUMMARY_EAC=""
 SUMMARY_DOCS=""
 
@@ -200,7 +242,7 @@ detect_iracing_depot() {
 }
 
 # =============================================================================
-# VDF EDITING HELPERS — used by Step 9 to auto-configure the compatibility
+# VDF EDITING HELPERS — used by Steps 7 and 11 to auto-configure the compatibility
 # tool and launch options. These make narrowly SCOPED edits only: locate
 # an exact block/line by walking the brace nesting, then touch only that
 # line/block. Nothing else in the file is rewritten, so an existing
@@ -375,6 +417,242 @@ find_iracing_common_path() {
     done < <(get_steam_libraries)
     return 1
 }
+
+# Search every Steam library for iRacing's appmanifest. Steam writes it
+# into whichever library the game was installed to, not always the
+# default one, so hardcoding $STEAM_APPS here meant anyone with iRacing
+# on a second drive was told it wasn't in their library at all - and no
+# amount of reinstalling in Steam would ever change that answer.
+find_iracing_acf() {
+    local lib candidate
+    while IFS= read -r lib; do
+        [[ -z "$lib" ]] && continue
+        candidate="$lib/steamapps/appmanifest_${IRACING_APPID}.acf"
+        [[ -f "$candidate" ]] && {
+            echo "$candidate"
+            return 0
+        }
+    done < <(get_steam_libraries)
+    return 1
+}
+
+# The Proton prefix belongs in the same library as the game, so derive it
+# from wherever the appmanifest was found rather than assuming the
+# default library.
+iracing_compatdata_dir() {
+    local acf_dir
+    acf_dir=$(dirname "$IRACING_ACF")
+    echo "$acf_dir/compatdata/$IRACING_APPID"
+}
+
+# A quick sanity check, not an exhaustive file listing. A real iRacing
+# install contains many more files and folders than this - these are
+# just a handful of reliable, always-present items used as a fast way to
+# tell "fully installed" apart from "stub only" or "partial install".
+#
+# These were validated against a Steam-installed iRacing, where Steam
+# lays out the whole depot. Used for detection on both account types.
+IRACING_FINGERPRINT=(
+    "iRacingSim64DX11.exe"
+    "iRacingService64.exe"
+    "iRacingLauncher64.exe"
+    "EasyAntiCheat"
+    "ui"
+    "cars"
+    "tracks"
+)
+
+# The Windows installer used by the Direct Account flow does NOT produce
+# the same layout as Steam's depot. Confirmed by running the real
+# installer (2026.06.09.01) into a scratch directory and listing the
+# result: the three executables, EasyAntiCheat and ui are all created,
+# but cars and tracks are NOT - the launcher fetches content on first
+# run, so a freshly installed Direct Account folder is ~2.2 GB and has
+# no content folders at all.
+#
+# This list is therefore used for BOTH detection and post-install
+# verification on the Direct Account path. Using the full list above
+# would classify a perfectly good fresh install as "partial" on the very
+# next run and offer to repair it, forever.
+#
+# Kept deliberately short. Inno Setup writes unins000.exe only once every
+# file has been extracted and CRC-checked, and version_system.txt lands
+# at the end of the same run, so between them they are the installer's
+# own statement that it finished rather than aborting partway. Neither
+# exists in a Steam depot install, which is why they belong here and not
+# in the list above. That makes the rest of the payload (the service and
+# launcher executables, EasyAntiCheat, ui) redundant to check - they
+# come out of the same extraction pass.
+#
+# iRacingSim64DX11.exe stays because this list also does detection on
+# every later run, not just verification straight after an install. The
+# two markers would still be sitting there months after someone deleted
+# or corrupted the sim binary, and at 282 MB it is also the file most
+# likely to be truncated by a disk filling up mid-install.
+IRACING_INSTALLER_FINGERPRINT=(
+    "iRacingSim64DX11.exe"
+    "unins000.exe"
+    "version_system.txt"
+)
+
+# Pass "verbose" as $2 to log the first missing entry, which over time
+# tells us which fingerprint items are unreliable in the wild. Off by
+# default because the polling loops call this every two seconds and would
+# otherwise flood the log a user sends in for support.
+# Pass "installer" as $3 to check the Direct Account layout (see
+# IRACING_INSTALLER_FINGERPRINT above) rather than the full Steam depot
+# layout. Which one applies is decided by account type, not by step.
+iracing_fingerprint_complete() {
+    local path="$1" verbose="${2:-}" which="${3:-full}" entry
+    local -a entries
+    if [[ "$which" == "installer" ]]; then
+        entries=("${IRACING_INSTALLER_FINGERPRINT[@]}")
+    else
+        entries=("${IRACING_FINGERPRINT[@]}")
+    fi
+    [[ ! -d "$path" ]] && {
+        [[ "$verbose" == "verbose" ]] && log "Fingerprint check: $path does not exist"
+        return 1
+    }
+    for entry in "${entries[@]}"; do
+        [[ ! -e "$path/$entry" ]] && {
+            [[ "$verbose" == "verbose" ]] && log "Fingerprint check ($which) at $path: missing '$entry'"
+            return 1
+        }
+    done
+    return 0
+}
+
+# Returns 0 (and logs) when an action should be skipped because this is a
+# dry run. Call sites read as: `dry_skip "install foo" || <do it>`.
+dry_skip() {
+    if $DRY_RUN; then
+        log "[DRY-RUN] would $1"
+        return 0
+    fi
+    return 1
+}
+
+# iRacing's own published minimum is 40 GB, with 225 GB quoted for all
+# cars and tracks. Checking against the minimum plus a quarter leaves
+# headroom for the install's own temporary files without refusing to run
+# on a machine that only ever wants the free content.
+#   https://www.iracing.com/membership/system-requirements/
+# Deliberately a hardcoded constant rather than scraped at runtime: the
+# figure changes about once a year, the page is a WordPress layout with
+# no stable markup around it, and a setup script shouldn't gain a
+# dependency on iracing.com being up and unchanged.
+IRACING_MIN_GB=40
+IRACING_REQUIRED_GB=$((IRACING_MIN_GB + IRACING_MIN_GB / 4))
+
+# Free space in GB on the filesystem holding the given path. Walks up to
+# the nearest existing parent, since the path itself may not exist yet.
+free_space_gb() {
+    local path="$1"
+    while [[ ! -d "$path" && "$path" != "/" ]]; do
+        path=$(dirname "$path")
+    done
+    df -BG --output=avail "$path" 2>/dev/null | tail -n1 | tr -dc '0-9'
+}
+
+# The user's Downloads folder, honouring their locale and any custom
+# XDG setting. Hardcoding $HOME/Downloads meant anyone on a localised
+# desktop (Téléchargements, Descargas, and so on) could never have their
+# installer found, and sat in the polling loop until they gave up.
+resolve_downloads_dir() {
+    local dir=""
+    if command -v xdg-user-dir &>/dev/null; then
+        dir=$(xdg-user-dir DOWNLOAD 2>/dev/null)
+    fi
+    # xdg-user-dir echoes $HOME when it has no answer, which is not a
+    # useful place to go hunting for an installer.
+    [[ -z "$dir" || "$dir" == "$HOME" ]] && dir="$HOME/Downloads"
+    echo "$dir"
+}
+
+DOWNLOADS_DIR=$(resolve_downloads_dir)
+
+# A folder existing under compatibilitytools.d doesn't mean it's a
+# working Proton build — an interrupted download, a tar that got killed
+# partway, or a disk-full extraction can all leave a folder in place
+# with core pieces missing. Steam itself also refuses to list a
+# compatibility tool that's missing compatibilitytool.vdf. Checking only
+# `-d` here previously meant a corrupt leftover folder would be treated
+# as "already installed" forever, silently skipping the download every
+# run — and, downstream, is the same kind of breakage that shows up as
+# "wine: could not load kernel32.dll" when protontricks tries to use it.
+proton_build_looks_complete() {
+    local dir="$1"
+    [[ -f "$dir/compatibilitytool.vdf" ]] || return 1
+    [[ -f "$dir/proton" ]] || return 1
+    [[ -d "$dir/files" || -d "$dir/dist" ]] || return 1
+    return 0
+}
+
+# NOTE: deliberately NOT using api.github.com here — the REST API is capped
+# at 60 unauthenticated requests/hour per source IP, which is easy to hit
+# on shared/NAT'd connections (or just from repeatedly testing this
+# script). github.com/<repo>/releases/latest is a plain web redirect, not
+# part of the API, and isn't subject to that limit. We resolve the tag
+# from the redirect's Location header, then scrape the real asset
+# filename from the releases/expanded_assets/<tag> HTML fragment
+# (see below) — also not part of the API, also not rate-limited.
+# Steam's CompatToolMapping refers to a tool by the name declared inside
+# its compatibilitytool.vdf, NOT by its folder name, and the two often
+# differ: the live build ships in a folder called
+# "iracing-dnsapi-fixmes" but declares itself as
+# "iracing-dnsapi-fixmes-proton". Writing the folder name into
+# config.vdf produces an assignment Steam cannot resolve, which then
+# silently does nothing.
+#
+# The file nests the name as a key under compat_tools:
+#   "compatibilitytools" { "compat_tools" { "<name>" { ... } } }
+# so the wanted key is the first quoted string after the compat_tools
+# line. Falls back to the folder name if the file can't be read, which
+# is the old behaviour and no worse than it was.
+proton_tool_internal_name() {
+    local dir="$1" vdf="$1/compatibilitytool.vdf" name=""
+    if [[ -f "$vdf" ]]; then
+        name=$(awk '
+            /"compat_tools"/ { in_ct = 1; next }
+            in_ct && /"[^"]+"/ {
+                match($0, /"[^"]+"/)
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+            }
+        ' "$vdf")
+    fi
+    if [[ -z "$name" ]]; then
+        log "[WARN] Could not read a tool name from $vdf — falling back to the folder name"
+        name=$(basename "$dir")
+    fi
+    echo "$name"
+}
+
+# Proton writes its version marker only once the prefix layout is
+# finished, so requiring both that and system32 avoids treating a
+# half-built prefix (interrupted first run) as ready. The marker is also
+# what Proton itself reads to decide whether an upgrade is needed.
+# Verified against a real Steam-created prefix: 907 files in system32
+# and a 17-byte version file, so both halves hold for prefixes Steam
+# made as well as ones this script bootstraps.
+# Defined up here, not in the step that uses it, because test mode runs
+# before every step and calls it too.
+prefix_looks_ready() {
+    [[ -d "$IRACING_COMPATDATA/pfx/drive_c/windows/system32" ]] || return 1
+    [[ -s "$IRACING_COMPATDATA/version" ]] || return 1
+    return 0
+}
+
+GH_REPO="DanFraserUK/proton-cachyos"
+
+# The Proton libraries iRacing needs. Defined here rather than inside
+# the step that installs them, so test mode can check the same list
+# without keeping a second copy of it in step with this one.
+REQUIRED_PKGS=(
+    vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022
+    d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact xact_x64 xaudio29
+)
 
 # Every blocking dialog below pauses briefly before opening. Zenity
 # windows render in the same default screen position each time, so a
@@ -899,6 +1177,314 @@ Click OK to begin."
 
 log "GUI setup started"
 
+if $DRY_RUN; then
+    gui_info "<b>Dry run</b>
+
+This walks through the whole setup and shows you every check and prompt, but doesn't install, download or change anything.
+
+Every action it would have taken is written to:
+<tt>$GENERAL_LOG</tt>"
+fi
+
+
+# =============================================================================
+# TEST MODE — report on an existing install, change nothing
+# =============================================================================
+# Deliberately does NOT call into the setup steps. It reuses the helpers
+# above (find_iracing_acf, iracing_fingerprint_complete, free_space_gb,
+# prefix_looks_ready, vdf_descend and friends) but owns its own reporting
+# so there is no path by which a report can trigger a write. Every check
+# is a read: stat, grep, df, or a protontricks query.
+#
+# The output is meant to be pasted into a support thread, so the log line
+# for each check carries the same text as the screen.
+if $TEST_MODE; then
+    log "=== TEST MODE — read-only report, nothing will be changed ==="
+
+    TEST_PASS=0
+    TEST_FAIL=0
+    TEST_WARN=0
+    TEST_REPORT=""
+
+    # result: pass | fail | warn
+    test_result() {
+        local result="$1" label="$2" detail="${3:-}"
+        local mark
+        case "$result" in
+        pass)
+            mark="✅"
+            TEST_PASS=$((TEST_PASS + 1))
+            ;;
+        warn)
+            mark="⚠️"
+            TEST_WARN=$((TEST_WARN + 1))
+            ;;
+        *)
+            mark="❌"
+            TEST_FAIL=$((TEST_FAIL + 1))
+            ;;
+        esac
+        TEST_REPORT="${TEST_REPORT}${mark}  ${label}${detail:+
+        <tt>${detail}</tt>}
+"
+        log "TEST [$result] $label${detail:+ — $detail}"
+    }
+
+    gui_open "Checking your iRacing setup..."
+
+    # --- Tools ---
+    if command -v steam &>/dev/null; then
+        test_result pass "Steam is installed"
+    else
+        test_result fail "Steam not found on PATH"
+    fi
+
+    if command -v protontricks &>/dev/null; then
+        test_result pass "protontricks is installed" "$(protontricks --version 2>&1 | head -n1)"
+    else
+        test_result fail "protontricks not found on PATH" "pipx users may need to open a new terminal"
+    fi
+
+    if command -v zenity &>/dev/null; then
+        test_result pass "zenity is installed"
+    else
+        test_result fail "zenity not found on PATH"
+    fi
+
+    # --- Steam login ---
+    TEST_LOGIN_VDF="$STEAM_ROOT/config/loginusers.vdf"
+    if [[ -f "$TEST_LOGIN_VDF" ]] && grep -q '"AccountName"' "$TEST_LOGIN_VDF" 2>/dev/null; then
+        test_result pass "Steam has a logged-in account"
+    else
+        test_result fail "No logged-in Steam account found" "$TEST_LOGIN_VDF"
+    fi
+
+    # --- Library and appmanifest ---
+    TEST_ACF=$(find_iracing_acf || true)
+    if [[ -n "$TEST_ACF" ]]; then
+        test_result pass "iRacing found in a Steam library" "$(dirname "$TEST_ACF")"
+        IRACING_ACF="$TEST_ACF"
+    else
+        test_result fail "No iRacing appmanifest in any Steam library" "searched: $(get_steam_libraries | tr '\n' ' ')"
+    fi
+
+    # --- Account type and game files ---
+    TEST_PATH=""
+    if [[ -n "$TEST_ACF" ]]; then
+        IRACING_DEPOT_PURCHASE=""
+        IRACING_DEPOT_DIRECT=""
+        detect_iracing_depot
+
+        if [[ -n "$IRACING_DEPOT_PURCHASE" ]]; then
+            test_result pass "Account type: Steam Purchase"
+            TEST_SET="full"
+        elif [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
+            test_result pass "Account type: Direct Account / Steam Key"
+            TEST_SET="installer"
+        else
+            test_result warn "Account type could not be determined from the appmanifest"
+            TEST_SET="full"
+        fi
+
+        TEST_INSTALL_DIR=$(extract_value "installdir" "$(cat "$TEST_ACF")")
+        TEST_PATH=$(find_iracing_common_path "$TEST_INSTALL_DIR" || true)
+        if [[ -n "$TEST_PATH" ]]; then
+            if iracing_fingerprint_complete "$TEST_PATH" verbose "$TEST_SET"; then
+                test_result pass "Game files look complete ($TEST_SET layout)" "$TEST_PATH"
+            else
+                test_result fail "Game files incomplete for the $TEST_SET layout" "$TEST_PATH"
+            fi
+            test_result pass "Install size" "$(du -sh "$TEST_PATH" 2>/dev/null | cut -f1)"
+        else
+            test_result fail "Game folder not found in any library" "installdir: ${TEST_INSTALL_DIR:-unknown}"
+        fi
+    fi
+
+    # --- Disk space ---
+    if [[ -n "$TEST_PATH" ]]; then
+        TEST_AVAIL=$(free_space_gb "$TEST_PATH")
+        if [[ -n "$TEST_AVAIL" && "$TEST_AVAIL" -lt "$IRACING_REQUIRED_GB" ]]; then
+            test_result warn "Low free space on the iRacing drive" "${TEST_AVAIL} GB free, ${IRACING_REQUIRED_GB} GB suggested"
+        else
+            test_result pass "Free space on the iRacing drive" "${TEST_AVAIL:-unknown} GB"
+        fi
+    fi
+
+    # --- Compatibility tool ---
+    TEST_CONFIG_VDF="$STEAM_ROOT/config/config.vdf"
+    TEST_ASSIGNED=""
+    if [[ -f "$TEST_CONFIG_VDF" ]]; then
+        ctm=$(vdf_descend "$TEST_CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
+        if [[ -n "$ctm" ]]; then
+            read -r _ ctm_start ctm_end <<<"$ctm"
+            appid_block=$(vdf_find_key_block "$TEST_CONFIG_VDF" "$((ctm_start + 1))" "$((ctm_end - 1))" "$IRACING_APPID" || true)
+            if [[ -n "$appid_block" ]]; then
+                read -r _ a_start a_end <<<"$appid_block"
+                TEST_ASSIGNED=$(sed -n "$((a_start + 1)),$((a_end - 1))p" "$TEST_CONFIG_VDF" | grep '"name"' | sed -E 's/.*"name"[^"]*"([^"]*)".*/\1/')
+            fi
+        else
+            test_result warn "config.vdf has no CompatToolMapping section" "no compatibility tool has ever been set in Steam"
+        fi
+    else
+        test_result fail "config.vdf not found" "$TEST_CONFIG_VDF"
+    fi
+
+    # config.vdf holds the tool's DECLARED name, which is often not its
+    # folder name, so match on what each installed build calls itself
+    # rather than on directory names.
+    TEST_TOOL_DIR=""
+    if [[ -n "$TEST_ASSIGNED" && -d "$COMPAT_TOOLS_DIR" ]]; then
+        while IFS= read -r cand; do
+            [[ -z "$cand" ]] && continue
+            if [[ "$(proton_tool_internal_name "$cand")" == "$TEST_ASSIGNED" ]]; then
+                TEST_TOOL_DIR="$cand"
+                break
+            fi
+        done < <(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+    fi
+
+    if [[ -n "$TEST_ASSIGNED" ]]; then
+        test_result pass "Compatibility tool assigned to iRacing" "$TEST_ASSIGNED"
+        if [[ -n "$TEST_TOOL_DIR" ]]; then
+            if proton_build_looks_complete "$TEST_TOOL_DIR"; then
+                test_result pass "Assigned tool found and looks complete" "$(basename "$TEST_TOOL_DIR")"
+            else
+                test_result fail "Assigned tool is present but incomplete" "$TEST_TOOL_DIR"
+            fi
+        else
+            test_result warn "Assigned tool not found in compatibilitytools.d" "may be a built-in Steam Proton, which is fine"
+        fi
+    else
+        test_result fail "No compatibility tool assigned to iRacing"
+    fi
+
+    # --- Latest release comparison (the one thing the setup never checks) ---
+    TEST_LATEST=$(curl -fsSL -o /dev/null -D - "https://github.com/${GH_REPO:-DanFraserUK/proton-cachyos}/releases/latest" 2>/dev/null |
+        grep -i '^location:' | tail -n1 | sed -E 's#.*/releases/tag/([^[:space:]/]+).*#\1#' | tr -d '\r')
+    # Compare folder against tag, not declared-name against tag: the tool
+    # calls itself "<something>-proton" while the release is tagged
+    # differently again, so a naive comparison always reports a newer
+    # build even when the latest one is already installed.
+    TEST_INSTALLED_TAG=""
+    [[ -n "$TEST_TOOL_DIR" ]] && TEST_INSTALLED_TAG=$(basename "$TEST_TOOL_DIR")
+    TEST_LATEST_ASSETS=$(curl -fsSL "https://github.com/${GH_REPO}/releases/expanded_assets/${TEST_LATEST}" 2>/dev/null)
+    TEST_LATEST_DIR=$(grep -oE "releases/download/${TEST_LATEST}/[^\"']+\.tar\.xz" <<<"$TEST_LATEST_ASSETS" | head -n1 | sed -E 's#.*/##')
+    TEST_LATEST_DIR="${TEST_LATEST_DIR%.tar.xz}"
+
+    if [[ -z "$TEST_LATEST" ]]; then
+        test_result warn "Couldn't reach GitHub to check for a newer Proton build"
+    elif [[ -z "$TEST_INSTALLED_TAG" ]]; then
+        test_result warn "Can't tell whether the Proton build is current" "latest release: $TEST_LATEST"
+    elif [[ -n "$TEST_LATEST_DIR" && "$TEST_INSTALLED_TAG" == "$TEST_LATEST_DIR" ]]; then
+        test_result pass "Proton build is the latest release" "$TEST_LATEST"
+    else
+        test_result warn "A newer Proton build may be available" "installed: $TEST_INSTALLED_TAG | latest: ${TEST_LATEST_DIR:-$TEST_LATEST}"
+    fi
+
+    # --- Prefix ---
+    if [[ -n "$TEST_ACF" ]]; then
+        IRACING_COMPATDATA=$(iracing_compatdata_dir)
+        if prefix_looks_ready; then
+            test_result pass "Proton prefix present" "$IRACING_COMPATDATA ($(cat "$IRACING_COMPATDATA/version" 2>/dev/null || echo unknown))"
+        else
+            test_result fail "Proton prefix missing or incomplete" "$IRACING_COMPATDATA"
+        fi
+    fi
+
+    # --- Proton libraries ---
+    gui_close
+    gui_open "Checking Proton libraries (this takes a moment)..."
+    TEST_LIST_TMP=$(mktemp)
+    protontricks "$IRACING_APPID" list-installed >"$TEST_LIST_TMP" 2>&1
+    TEST_LIST_EXIT=$?
+    TEST_LIST=$(cat "$TEST_LIST_TMP" 2>/dev/null || true)
+    rm -f "$TEST_LIST_TMP"
+    gui_close
+    gui_open "Finishing the report..."
+
+    if [[ $TEST_LIST_EXIT -ne 0 || -z "$TEST_LIST" ]]; then
+        test_result fail "Couldn't query Proton libraries" "protontricks exit $TEST_LIST_EXIT — the prefix or the assigned tool can't start"
+    else
+        TEST_MISSING=()
+        for pkg in "${REQUIRED_PKGS[@]}"; do
+            echo "$TEST_LIST" | grep -qw "$pkg" || TEST_MISSING+=("$pkg")
+        done
+        if [[ ${#TEST_MISSING[@]} -eq 0 ]]; then
+            test_result pass "All ${#REQUIRED_PKGS[@]} required Proton libraries present"
+        else
+            test_result fail "${#TEST_MISSING[@]} of ${#REQUIRED_PKGS[@]} Proton libraries missing" "${TEST_MISSING[*]}"
+        fi
+    fi
+
+    # --- Launch options ---
+    TEST_STEAMID3=$(resolve_steamid3 || true)
+    if [[ -z "$TEST_STEAMID3" ]]; then
+        test_result warn "Couldn't resolve the Steam account folder" "$STEAM_ROOT/userdata"
+    else
+        TEST_LOCALCONFIG="$STEAM_ROOT/userdata/$TEST_STEAMID3/config/localconfig.vdf"
+        if [[ ! -f "$TEST_LOCALCONFIG" ]]; then
+            test_result warn "localconfig.vdf not found" "$TEST_LOCALCONFIG"
+        elif grep -qF "PROTON_LOG=1" "$TEST_LOCALCONFIG" 2>/dev/null; then
+            test_result pass "Launch options include PROTON_LOG=1"
+        else
+            test_result warn "Launch options don't include PROTON_LOG=1" "not required to play, but useful for support"
+        fi
+    fi
+
+    # --- Optional extras ---
+    if grep -qF "0.0.0.0 modules-cdn.eac-prod.on.epicgames.com" /etc/hosts 2>/dev/null; then
+        test_result pass "EAC hosts workaround is applied"
+    else
+        test_result warn "EAC hosts workaround is not applied" "optional, and at your own risk"
+    fi
+
+    # -L alone only asks "is this a symlink", not "does it point at
+    # anything". A shortcut left behind by moving iRacing to another
+    # library is still a symlink, and still completely broken.
+    TEST_DOCS_LINK="$HOME/Documents/iRacing"
+    TEST_DOCS_EXPECTED="$IRACING_COMPATDATA/pfx/drive_c/users/steamuser/Documents/iRacing"
+    if [[ -L "$TEST_DOCS_LINK" ]]; then
+        TEST_DOCS_TARGET=$(readlink "$TEST_DOCS_LINK")
+        if [[ ! -d "$TEST_DOCS_LINK" ]]; then
+            test_result fail "Documents shortcut is broken" "points at $TEST_DOCS_TARGET, which doesn't exist"
+        elif [[ "$TEST_DOCS_TARGET" != "$TEST_DOCS_EXPECTED" ]]; then
+            test_result warn "Documents shortcut points somewhere unexpected" "is: $TEST_DOCS_TARGET | expected: $TEST_DOCS_EXPECTED"
+        else
+            test_result pass "Documents shortcut is correct" "$TEST_DOCS_TARGET"
+        fi
+    elif [[ -e "$TEST_DOCS_LINK" ]]; then
+        test_result warn "Documents shortcut path exists but isn't a symlink" "$TEST_DOCS_LINK"
+    else
+        test_result warn "No Documents shortcut yet" "created after iRacing has run once"
+    fi
+
+    gui_close
+
+    log "TEST MODE complete — $TEST_PASS passed, $TEST_WARN warnings, $TEST_FAIL failed"
+
+    TEST_VERDICT="<b>$TEST_PASS passed</b>, $TEST_WARN warning(s), <b>$TEST_FAIL failed</b>"
+    if [[ $TEST_FAIL -eq 0 && $TEST_WARN -eq 0 ]]; then
+        TEST_HEADLINE="<b>Everything looks right.</b>"
+    elif [[ $TEST_FAIL -eq 0 ]]; then
+        TEST_HEADLINE="<b>No failures, but a few things worth a look.</b>"
+    else
+        TEST_HEADLINE="<b>Some things need attention.</b>\n\nRe-running this script normally will try to fix most of them."
+    fi
+
+    gui_info "$TEST_HEADLINE
+
+$TEST_REPORT
+$TEST_VERDICT
+
+This report is also saved to:
+<tt>$GENERAL_LOG</tt>
+Paste that file into a support thread if you need a hand."
+
+    # cleanup_and_exit is the EXIT trap handler and only tidies up — it
+    # does not exit on its own. Exiting here fires it anyway.
+    exit 0
+fi
+
 # =============================================================================
 # STEP 1 — Install Steam and protontricks
 # =============================================================================
@@ -910,6 +1496,14 @@ PACKAGES_INSTALLED_THIS_RUN=false
 
 install_if_missing() {
     local pkg="$1"
+    # Guarded once at the top rather than per package manager: the
+    # already-installed checks below are read-only and safe, but every
+    # branch past them shells out to a root package install.
+    if $DRY_RUN && ! command -v "$pkg" &>/dev/null; then
+        log "[DRY-RUN] would install $pkg via $DISTRO_FAMILY package manager"
+        PACKAGES_INSTALLED_THIS_RUN=true
+        return
+    fi
     case "$DISTRO_FAMILY" in
     debian)
         if [[ "$pkg" == "protontricks" ]]; then
@@ -956,6 +1550,20 @@ install_if_missing() {
             DEBIAN_APT_UPDATED=true
             log "$pkg installed successfully via apt-get"
             PACKAGES_INSTALLED_THIS_RUN=true
+            # pipx ensurepath edits the shell profile, which does nothing
+            # for the shell already running this script. Without this,
+            # protontricks is installed but not on PATH, and the failure
+            # surfaces much later (Step 10) after the user has already
+            # sat through a Proton download and a prefix bootstrap.
+            if [[ "$pkg" == "protontricks" ]] && ! command -v protontricks &>/dev/null; then
+                export PATH="$HOME/.local/bin:$PATH"
+                if command -v protontricks &>/dev/null; then
+                    log "Added ~/.local/bin to PATH for this run — pipx-installed protontricks now resolvable"
+                else
+                    log "[ERROR] protontricks installed via pipx but still not on PATH (checked ~/.local/bin)"
+                    gui_error "❌ <b>protontricks</b> was installed but can't be found.\n\npipx usually puts it in <tt>~/.local/bin</tt>. Try opening a new terminal and running:\n\n<tt>protontricks --version</tt>\n\nIf that works, re-run this setup. If it doesn't, run <tt>pipx ensurepath</tt> and log out and back in."
+                fi
+            fi
         else
             local install_exit=$?
             log "[ERROR] $pkg install via apt-get failed (exit $install_exit) — see $TECH_LOG for apt/pipx output"
@@ -1136,7 +1744,12 @@ log "=== Step 3 — Detecting iRacing ==="
 
 gui_open "Checking your Steam library..."
 
+# Default to the default library so the "not found" message and Step 4's
+# polling both have a concrete path to name, then overwrite it if the
+# appmanifest actually turns up in another library.
 IRACING_ACF="$STEAM_APPS/appmanifest_${IRACING_APPID}.acf"
+IRACING_ACF_FOUND=$(find_iracing_acf || true)
+[[ -n "$IRACING_ACF_FOUND" ]] && IRACING_ACF="$IRACING_ACF_FOUND"
 IRACING_DEPOT_PURCHASE=""
 IRACING_DEPOT_DIRECT=""
 
@@ -1189,7 +1802,17 @@ wait_for_iracing_acf() {
     local attempt=0
     ACF_WAIT_TOTAL_LOOPS=0
 
-    while [[ ! -f "$IRACING_ACF" ]]; do
+    # Re-search every library on each pass rather than watching one fixed
+    # path: the user may well pick a different drive in Steam's install
+    # dialog, and libraryfolders.vdf can gain an entry mid-wait.
+    local found
+    while true; do
+        found=$(find_iracing_acf || true)
+        if [[ -n "$found" ]]; then
+            IRACING_ACF="$found"
+            break
+        fi
+
         attempt=$((attempt + 1))
         ACF_WAIT_TOTAL_LOOPS=$((ACF_WAIT_TOTAL_LOOPS + 1))
 
@@ -1230,9 +1853,11 @@ Need a key first? Generate one here:
     # page instead of failing silently. Firing both covers Direct Account
     # and Steam Purchase without needing to know in advance which one this
     # user is.
-    (steam steam://open/activateproduct >/dev/null 2>&1 &) 2>/dev/null
-    sleep 1
-    (steam "steam://install/${IRACING_APPID}" >/dev/null 2>&1 &) 2>/dev/null
+    if ! dry_skip "fire steam://open/activateproduct and steam://install/${IRACING_APPID}"; then
+        (steam steam://open/activateproduct >/dev/null 2>&1 &) 2>/dev/null
+        sleep 1
+        (steam "steam://install/${IRACING_APPID}" >/dev/null 2>&1 &) 2>/dev/null
+    fi
     log "Fired steam://open/activateproduct and steam://install/${IRACING_APPID}"
 
     wait_for_iracing_acf
@@ -1247,8 +1872,8 @@ fi
 
 # appmanifest exists but we still don't know Purchase vs Direct — ask the
 # user to check Steam directly rather than silently skipping installation
-# entirely (which is what used to happen: neither Step 5 nor Step 6 would
-# run if depot detection came back empty).
+# entirely (which is what used to happen: Step 5 would skip both the
+# Purchase and the Direct branch if depot detection came back empty).
 if [[ -z "$IRACING_DEPOT_PURCHASE" && -z "$IRACING_DEPOT_DIRECT" ]]; then
     log "[WARN] Step 4 — appmanifest present but depot type undetermined; asking user to verify"
     gui_warn "iRacing was found in your library, but I couldn't confirm what's actually installed yet.
@@ -1283,101 +1908,108 @@ fi
 log "Step 4 complete — iRacing confirmed in library (type: ${IRACING_DEPOT_PURCHASE:+Steam Purchase}${IRACING_DEPOT_DIRECT:+Direct Account})"
 
 # =============================================================================
-# STEP 5 — Steam Purchase: verify game files
+# STEP 5 — Detect game file state (and act on it where Steam can)
 # =============================================================================
-# NOTE: this is a quick sanity check, not an exhaustive file listing.
-# A real iRacing install contains many more files/folders than this — these
-# are just a handful of reliable, always-present items used as a fast way
-# to tell "fully installed" apart from "stub only" or "partial install".
-IRACING_FINGERPRINT=(
-    "iRacingSim64DX11.exe"
-    "iRacingService64.exe"
-    "iRacingLauncher64.exe"
-    "EasyAntiCheat"
-    "ui"
-    "cars"
-    "tracks"
-)
+# This step deliberately does no Proton work at all. Everything here is
+# filesystem checks and Steam UI prompts, both of which want Steam open.
+# From Step 6 onward Steam stays closed, so anything needing it open has
+# to happen before we leave this step.
+#
+# For Direct Account users the Windows installer itself runs much later
+# (Step 9), once there's a Proton build, a compatibility tool assignment
+# and a prefix for it to run in. What gets decided here is only *whether*
+# it needs to run.
+IRACING_INSTALL_ACTION="none" # none | install | repair
+IRACING_FILE_STATE="unknown"  # unknown | complete | missing | stub | partial
 
-# Checks all fingerprint items exist under the given path. Used instead of
-# watching the appmanifest's mtime to detect "install/verify finished" —
-# mtime changes the moment Steam *starts* an install or verify, not when
-# it completes, so mtime-based waits can report false-complete seconds
-# into a multi-minute download. This is un-spammable: repeatedly clicking
-# "check again" just runs the same real check again.
-iracing_fingerprint_complete() {
-    local path="$1" entry
-    [[ ! -d "$path" ]] && return 1
-    for entry in "${IRACING_FINGERPRINT[@]}"; do
-        [[ ! -e "$path/$entry" ]] && return 1
-    done
-    return 0
-}
-
-if [[ -n "$IRACING_DEPOT_PURCHASE" ]]; then
-    log "=== Step 5 — Steam Purchase Installation ==="
+if [[ -n "$IRACING_DEPOT_PURCHASE" || -n "$IRACING_DEPOT_DIRECT" ]]; then
+    log "=== Step 5 — Game File State ==="
 
     gui_open "Checking iRacing game files..."
     INSTALL_DIR=$(extract_value "installdir" "$(cat "$IRACING_ACF")")
-    # Search every Steam library, not just the default one — iRacing may be
-    # installed on a secondary drive/library.
-    IRACING_PATH=$(find_iracing_common_path "$INSTALL_DIR")
-    if [[ -z "$IRACING_PATH" ]]; then
-        IRACING_PATH="$STEAM_APPS/common/$INSTALL_DIR"
-        log "installdir '$INSTALL_DIR' not found in any known library yet — defaulting to $IRACING_PATH"
+
+    # Search every Steam library, not just the default one — iRacing may
+    # be installed on a secondary drive/library.
+    IRACING_STEAM_PATH=$(find_iracing_common_path "$INSTALL_DIR")
+    if [[ -z "$IRACING_STEAM_PATH" ]]; then
+        # Not created anywhere yet — default to the library the
+        # appmanifest lives in, since that's where Steam will create it.
+        IRACING_STEAM_PATH="$(dirname "$IRACING_ACF")/common/$INSTALL_DIR"
+        log "installdir '$INSTALL_DIR' not found in any known library yet — defaulting to $IRACING_STEAM_PATH"
     else
-        log "installdir '$INSTALL_DIR' found at $IRACING_PATH"
+        log "installdir '$INSTALL_DIR' found at $IRACING_STEAM_PATH"
     fi
     gui_close
 
-    if [[ -d "$IRACING_PATH" ]]; then
-        all_found=true
-        for entry in "${IRACING_FINGERPRINT[@]}"; do
-            [[ ! -e "$IRACING_PATH/$entry" ]] && {
-                all_found=false
-                log "Fingerprint check: missing '$entry' — treating install as incomplete"
-                break
-            }
-        done
-
-        if $all_found; then
-            IRACING_SIZE_MB=$(du -sm "$IRACING_PATH" 2>/dev/null | cut -f1)
-            log "Fingerprint check passed — all ${#IRACING_FINGERPRINT[@]} expected items present at $IRACING_PATH"
-            log "Step 5 — install size: ${IRACING_SIZE_MB:-unknown} MB"
-            gui_info "<b>iRacing game files found and look complete.</b>\n\nLocation: <tt>$IRACING_PATH</tt>"
-            SUMMARY_IRACING_FILES="Files complete"
-        else
-            log "Prompting user to verify game files via Steam"
-
-            gui_warn "<b>iRacing folder exists but looks incomplete.</b>
-
-Please open Steam and verify the game files:
-<b>Right-click iRacing -> Properties -> Installed Files -> Verify integrity</b>
-
-Click OK once Steam has finished verifying."
-
-            attempt=0
-            while true; do
-                gui_open "Checking iRacing files..."
-                sleep 2
-                gui_close
-                if iracing_fingerprint_complete "$IRACING_PATH"; then
-                    log "Fingerprint check passed — verification detected as complete"
-                    break
-                fi
-                attempt=$((attempt + 1))
-                if [[ $attempt -ge 2 ]]; then
-                    if ! zenity --question --title="$TITLE" --text="Files still look incomplete.\n\nHas the verification finished? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
-                        log "User quit at Step 5 while waiting for Steam verification"
-                        exit 0
-                    fi
-                    attempt=0
-                fi
-            done
-            SUMMARY_IRACING_FILES="Verified"
-        fi
+    # Which layout counts as "complete" depends on the account type, not
+    # on the step. A Direct Account install comes from the Windows
+    # installer, which ships no cars or tracks at all - checking it
+    # against Steam's depot layout would call a healthy install partial
+    # on every run after the first and keep offering to repair it.
+    if [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
+        FINGERPRINT_SET="installer"
     else
-        log "$IRACING_PATH doesn't exist yet — prompting user to install via Steam"
+        FINGERPRINT_SET="full"
+    fi
+    log "Step 5 — using '$FINGERPRINT_SET' fingerprint set for this account type"
+
+    # Classify into exactly one of four states. The stub heuristic only
+    # applies once the fingerprint has already failed, so branch order
+    # matters here.
+    FILE_COUNT=""
+    DIR_SIZE=""
+    IRACING_FILE_STATE="missing"
+    if iracing_fingerprint_complete "$IRACING_STEAM_PATH" verbose "$FINGERPRINT_SET"; then
+        IRACING_FILE_STATE="complete"
+    elif [[ -d "$IRACING_STEAM_PATH" ]]; then
+        FILE_COUNT=$(find "$IRACING_STEAM_PATH" -maxdepth 1 -type f | wc -l)
+        DIR_SIZE=$(du -sb "$IRACING_STEAM_PATH" 2>/dev/null)
+        DIR_SIZE="${DIR_SIZE%%$'\t'*}"
+        if [[ "$FILE_COUNT" -le 3 && "${DIR_SIZE:-0}" -lt 5000 ]]; then
+            IRACING_FILE_STATE="stub"
+        else
+            IRACING_FILE_STATE="partial"
+        fi
+    fi
+
+    log "Step 5 — path=<$IRACING_STEAM_PATH> state=<$IRACING_FILE_STATE> files=<${FILE_COUNT:-n/a}> bytes=<${DIR_SIZE:-n/a}>"
+    # Checked here rather than at the point of download so the user finds
+    # out before sitting through a Proton download, not after.
+    if [[ "$IRACING_FILE_STATE" != "complete" ]]; then
+        AVAIL_GB=$(free_space_gb "$IRACING_STEAM_PATH")
+        log "Step 5 — free space at $IRACING_STEAM_PATH: ${AVAIL_GB:-unknown} GB (want ${IRACING_REQUIRED_GB} GB)"
+        if [[ -n "$AVAIL_GB" && "$AVAIL_GB" -lt "$IRACING_REQUIRED_GB" ]]; then
+            if ! gui_question "<b>That drive may not have enough free space.</b>
+
+iRacing would be installed here:
+
+    <tt><b>$IRACING_STEAM_PATH</b></tt>
+
+Free space:  <b>${AVAIL_GB} GB</b>
+Suggested:   <b>${IRACING_REQUIRED_GB} GB</b>
+
+iRacing's published minimum is ${IRACING_MIN_GB} GB, and considerably more if you buy a lot of cars and tracks.
+
+<b>Carry on anyway?</b>" "cancel"; then
+                log "User quit at Step 5 — insufficient disk space (${AVAIL_GB} GB free)"
+                exit 0
+            fi
+            log "[WARN] Step 5 — user chose to continue with only ${AVAIL_GB} GB free"
+        fi
+    fi
+fi
+
+# --- Steam Purchase: Steam owns the files, so remediate through Steam ---
+if [[ -n "$IRACING_DEPOT_PURCHASE" ]]; then
+    case "$IRACING_FILE_STATE" in
+    complete)
+        IRACING_SIZE_MB=$(du -sm "$IRACING_STEAM_PATH" 2>/dev/null | cut -f1)
+        log "Step 5 — all ${#IRACING_FINGERPRINT[@]} expected items present, install size ${IRACING_SIZE_MB:-unknown} MB"
+        gui_info "<b>iRacing game files found and look complete.</b>\n\nLocation: <tt>$IRACING_STEAM_PATH</tt>"
+        SUMMARY_IRACING_FILES="Files complete"
+        ;;
+    missing)
+        log "$IRACING_STEAM_PATH doesn't exist yet — prompting user to install via Steam"
 
         gui_warn "<b>iRacing hasn't been downloaded yet.</b>
 
@@ -1391,7 +2023,7 @@ Click OK once the install is done."
             gui_open "Checking for iRacing installation..."
             sleep 2
             gui_close
-            if iracing_fingerprint_complete "$IRACING_PATH"; then
+            if iracing_fingerprint_complete "$IRACING_STEAM_PATH"; then
                 log "Fingerprint check passed — install detected as complete"
                 break
             fi
@@ -1405,370 +2037,144 @@ Click OK once the install is done."
             fi
         done
         SUMMARY_IRACING_FILES="Installed via Steam"
-    fi
+        ;;
+    *)
+        log "Prompting user to verify game files via Steam (state: $IRACING_FILE_STATE)"
+
+        gui_warn "<b>iRacing folder exists but looks incomplete.</b>
+
+Please open Steam and verify the game files:
+<b>Right-click iRacing -> Properties -> Installed Files -> Verify integrity</b>
+
+Click OK once Steam has finished verifying."
+
+        attempt=0
+        while true; do
+            gui_open "Checking iRacing files..."
+            sleep 2
+            gui_close
+            if iracing_fingerprint_complete "$IRACING_STEAM_PATH"; then
+                log "Fingerprint check passed — verification detected as complete"
+                break
+            fi
+            attempt=$((attempt + 1))
+            if [[ $attempt -ge 2 ]]; then
+                if ! zenity --question --title="$TITLE" --text="Files still look incomplete.\n\nHas the verification finished? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                    log "User quit at Step 5 while waiting for Steam verification"
+                    exit 0
+                fi
+                attempt=0
+            fi
+        done
+        SUMMARY_IRACING_FILES="Verified"
+        ;;
+    esac
 
     log "Step 5 complete — $SUMMARY_IRACING_FILES"
 fi
 
-# =============================================================================
-# STEP 6 — Direct account: install via Windows installer
-# =============================================================================
+# --- Direct Account: only the part that needs Steam open happens here ---
 
-run_iracing_windows_installer_flow() {
-    log "Entering stub/full-install flow (will open download + wait for installer)"
+# Steam creates the stub folder, so this wait has to sit while Steam is
+# still open and the user can reach their Library. The installer that
+# fills the folder runs much later, in Step 9.
+wait_for_iracing_stub() {
+    local acf_mtime_before acf_mtime_now attempt=0 found
 
-    if [[ ! -d "$IRACING_STEAM_PATH" ]]; then
-        # Watch for the stub directory appearing after Steam installs it
-        ACF_MTIME_BEFORE=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
+    acf_mtime_before=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
 
-        gui_warn "<b>iRacing stub not found.</b>
+    gui_warn "<b>iRacing stub not found.</b>
 
 Please open Steam and install iRacing:
 <b>Library -> iRacing -> Install</b>
 
 This just downloads a small stub, a few MB.  Click OK once Steam shows it as installed."
 
-        attempt=0
-        while true; do
-            gui_open "Checking for iRacing stub..."
-            sleep 2
-            gui_close
-            ACF_MTIME_NOW=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
-            if [[ -d "$IRACING_STEAM_PATH" && "$ACF_MTIME_NOW" != "$ACF_MTIME_BEFORE" ]]; then
-                break
+    while true; do
+        gui_open "Checking for iRacing stub..."
+        sleep 2
+        gui_close
+
+        # Re-resolve rather than re-testing the path guessed before the
+        # stub existed: Steam's install dialog lets the user pick any
+        # library, and the guess defaulted to whichever one holds the
+        # appmanifest. Pointing the installer's /DIR= at the wrong drive
+        # is a silent, expensive mistake.
+        found=$(find_iracing_common_path "$INSTALL_DIR" || true)
+        acf_mtime_now=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
+
+        if [[ -n "$found" && "$acf_mtime_now" != "$acf_mtime_before" ]]; then
+            if [[ "$found" != "$IRACING_STEAM_PATH" ]]; then
+                log "Stub landed in a different library than expected — correcting path from $IRACING_STEAM_PATH to $found"
+                IRACING_STEAM_PATH="$found"
             fi
-            attempt=$((attempt + 1))
-            if [[ $attempt -ge 2 ]]; then
-                if ! zenity --question --title="$TITLE" --text="iRacing stub still not found.\n\nHas Steam finished installing it? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
-                    exit 0
-                fi
-                attempt=0
-                ACF_MTIME_BEFORE=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
-            fi
-        done
-    fi
+            log "iRacing stub detected at $IRACING_STEAM_PATH"
+            return 0
+        fi
 
-    IRACING_WIN_PATH="Z:${IRACING_STEAM_PATH//\//\\}"
-    IRACING_WIN_PATH_DISPLAY=$(echo "$IRACING_WIN_PATH" | sed 's/\\/\&#92;/g')
-
-    IRACING_DOWNLOAD_URL="https://members.iracing.com/download/member/noservice.jsp"
-
-    gui_info "<b>iRacing stub detected — the full game files aren't installed yet.</b>
-
-You'll need to run the iRacing Windows installer.  Here's what to do:
-
-<b>Step 1:</b> Your browser is about to open the download page. Click the
-download button on that page.
-
-<i>Note: the page may open a new tab and then close it again on its own
-once the download starts — that's normal for this site, not an error.
-Don't worry if it happens.</i>
-
-<b>Step 2:</b> Save it to your <b>Downloads</b> folder — that's the
-<tt>Downloads</tt> folder in your file manager/home folder
-(<tt>~/Downloads</tt>).
-The filename looks like: <tt>iRacingInstaller_win_YYYY.MM.DD.NN.exe</tt>
-
-<tt>──────────────────────────────────────────────────</tt>
-<b>  Wait for the download to fully finish before clicking OK.</b>
-<tt>──────────────────────────────────────────────────</tt>
-
-Click OK to open the download page and continue."
-
-    (xdg-open "$IRACING_DOWNLOAD_URL" >/dev/null 2>&1 &) 2>/dev/null
-    log "Opened iRacing download page via xdg-open"
-
-    find_latest_iracing_installer() {
-        local f best="" best_key=""
-        while IFS= read -r f; do
-            [[ -z "$f" ]] && continue
-            local base date_part key
-            base=$(basename "$f")
-            date_part="${base#iRacingInstaller_win_}"
-            date_part="${date_part%.exe}"
-            key=$(awk -F. '{ for (i=1;i<=NF;i++) printf "%04d.", $i }' <<<"$date_part")
-            if [[ -z "$best_key" || "$key" > "$best_key" ]]; then
-                best="$f"
-                best_key="$key"
-            fi
-        done < <(find "$HOME/Downloads" -maxdepth 1 -type f -size +1M -name 'iRacingInstaller_win_*.exe' 2>/dev/null)
-        echo "$best"
-    }
-
-    INSTALLER_EXE=""
-    installer_wait_attempt=0
-    installer_silent_checks=4
-    installer_patient_checks=6
-    while [[ -z "$INSTALLER_EXE" ]]; do
-        installer_wait_attempt=$((installer_wait_attempt + 1))
-        INSTALLER_EXE=$(find_latest_iracing_installer)
-        [[ -n "$INSTALLER_EXE" ]] && break
-
-        if [[ $installer_wait_attempt -le $installer_silent_checks ]]; then
-            sleep 2
-        elif [[ $installer_wait_attempt -le $((installer_silent_checks + installer_patient_checks)) ]]; then
-            gui_open "Still looking for the installer in Downloads...\n\nA real download can take a few minutes — hang tight."
-            sleep 2
-            gui_close
-        else
-            if ! zenity --question --title="$TITLE" --text="No iRacing installer found in ~/Downloads yet.\n\nHas the download finished? Click <b>Yes</b> to keep waiting, or <b>No</b> to quit." --ok-label="Yes, keep waiting" --cancel-label="No, quit" --width=500 2>/dev/null; then
-                log "User quit at Step 6 while waiting for the installer download"
+        attempt=$((attempt + 1))
+        if [[ $attempt -ge 2 ]]; then
+            if ! zenity --question --title="$TITLE" --text="iRacing stub still not found.\n\nHas Steam finished installing it? Click <b>Yes</b> to check again, or <b>No</b> to quit." --ok-label="Yes, check again" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                log "User quit at Step 5 while waiting for the iRacing stub"
                 exit 0
             fi
-            installer_wait_attempt=0
+            attempt=0
+            acf_mtime_before=$(stat -c "%Y" "$IRACING_ACF" 2>/dev/null || echo "0")
         fi
     done
-
-    log "Installer found after $installer_wait_attempt polling pass(es)"
-    gui_info "Found installer: <tt>$(basename "$INSTALLER_EXE")</tt>
-
-The installer will now run on its own and install iRacing to the
-correct location in your Steam library:
-
-<tt>$IRACING_WIN_PATH_DISPLAY</tt>
-
-No action needed from you — it runs silently, and iRacing will
-not launch automatically when it's done.
-
-Click OK to begin."
-
-    INSTALLER_SIZE_MB=$(du -sm "$INSTALLER_EXE" 2>/dev/null | cut -f1)
-    log "Step 6 — installer file size: ${INSTALLER_SIZE_MB:-unknown} MB"
-
-    ensure_steam_closed "<b>Steam needs to be closed before running the iRacing installer.</b>
-
-Please close Steam now, then click OK."
-    log "Steam confirmed closed before running Windows installer"
-
-    log "Launching Windows installer: $INSTALLER_EXE -> $IRACING_STEAM_PATH"
-    INSTALL_START_TS=$(date +%s)
-    run_redacted "$TECH_LOG" protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" \
-        /SILENT /SUPPRESSMSGBOXES /NORESTART \
-        /DIR="$IRACING_WIN_PATH" &
-    INSTALL_PID=$!
-
-    gui_wait $INSTALL_PID "Installing iRacing...\n\nDestination:\n<tt>$IRACING_WIN_PATH_DISPLAY</tt>\n\nThis will take a few minutes, please wait."
-    wait "$INSTALL_PID"
-    INSTALL_EXIT=$?
-    INSTALL_ELAPSED=$(($(date +%s) - INSTALL_START_TS))
-    log "Windows installer finished (exit $INSTALL_EXIT) after ${INSTALL_ELAPSED}s"
-
-    gui_open "Verifying iRacing installation..."
-    sleep 0.5
-    gui_close
-
-    if [[ ! -d "$IRACING_STEAM_PATH" ]] || [[ $(find "$IRACING_STEAM_PATH" -maxdepth 1 -type f | wc -l) -le 3 ]]; then
-        log "[ERROR] Post-install check failed — $IRACING_STEAM_PATH missing or looks empty"
-        gui_error "iRacing doesn't look like it installed correctly.
-
-Expected location: <tt>$IRACING_STEAM_PATH</tt>
-
-Please re-run the installer and make sure the install path is set to:
-
-    <tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>"
-    fi
-
-    IRACING_INSTALLED_SIZE_MB=$(du -sm "$IRACING_STEAM_PATH" 2>/dev/null | cut -f1)
-    log "Step 6 complete — install verified at $IRACING_STEAM_PATH"
-    log "Step 6 — final install size: ${IRACING_INSTALLED_SIZE_MB:-unknown} MB"
-    gui_info "<b>iRacing installation confirmed!</b>\n\nLocation: <tt>$IRACING_STEAM_PATH</tt>"
-    SUMMARY_IRACING_FILES="Installed via Windows installer"
 }
 
 if [[ -n "$IRACING_DEPOT_DIRECT" ]]; then
-    log "=== Step 6 — Direct Account Installation ==="
-
-    INSTALL_DIR=""
-    gui_open "Checking iRacing game files..."
-    INSTALL_DIR=$(extract_value "installdir" "$(cat "$IRACING_ACF")")
-
-    IRACING_STEAM_PATH=$(find_iracing_common_path "$INSTALL_DIR")
-    if [[ -z "$IRACING_STEAM_PATH" ]]; then
-        # Stub not created anywhere yet — default to the library the
-        # appmanifest lives in, since that's where Steam will create it.
-        IRACING_STEAM_PATH="$STEAM_APPS/common/$INSTALL_DIR"
-    fi
-
-    log "Step 6 paths: INSTALL_DIR=<$INSTALL_DIR> IRACING_STEAM_PATH=<$IRACING_STEAM_PATH> exists?=$([[ -d "$IRACING_STEAM_PATH" ]] && echo yes || echo no)"
-
-    fully_installed=false
-    stub_detected=false
-
-    if [[ -d "$IRACING_STEAM_PATH" ]]; then
-        all_found=true
-        for entry in "${IRACING_FINGERPRINT[@]}"; do
-            [[ ! -e "$IRACING_STEAM_PATH/$entry" ]] && {
-                all_found=false
-                break
-            }
-        done
-        if $all_found; then
-            fully_installed=true
-        else
-            FILE_COUNT=$(find "$IRACING_STEAM_PATH" -maxdepth 1 -type f | wc -l)
-            DIR_SIZE=$(du -sb "$IRACING_STEAM_PATH" 2>/dev/null)
-            DIR_SIZE="${DIR_SIZE%%$'\t'*}"
-            [[ "$FILE_COUNT" -le 3 && "$DIR_SIZE" -lt 5000 ]] && stub_detected=true
-        fi
-    fi
-    gui_close
-
-    log "Step 6 decision vars: fully_installed=<$fully_installed> stub_detected=<$stub_detected> IRACING_STEAM_PATH=<$IRACING_STEAM_PATH> exists?=$([[ -d "$IRACING_STEAM_PATH" ]] && echo yes || echo no)"
-
-    if $fully_installed; then
+    case "$IRACING_FILE_STATE" in
+    complete)
         gui_info "<b>iRacing is already fully installed.</b>\n\nLocation: <tt>$IRACING_STEAM_PATH</tt>"
         SUMMARY_IRACING_FILES="Files complete"
-    elif $stub_detected || [[ ! -d "$IRACING_STEAM_PATH" ]]; then
-        run_iracing_windows_installer_flow
-    else
-        # Partial install: directory exists but fingerprint missing -> run installer anyway
-        log "Partial install state detected (dir exists but fingerprint incomplete). Forcing installer flow."
-        stub_detected=true
-        run_iracing_windows_installer_flow
-    fi
+        IRACING_INSTALL_ACTION="none"
+        ;;
+    missing)
+        wait_for_iracing_stub
+        IRACING_INSTALL_ACTION="install"
+        SUMMARY_IRACING_FILES="Pending — Windows installer"
+        ;;
+    stub)
+        IRACING_INSTALL_ACTION="install"
+        SUMMARY_IRACING_FILES="Pending — Windows installer"
+        ;;
+    partial)
+        # Not necessarily a broken install: the fingerprint has seven
+        # entries and some depend on install layout or content ownership,
+        # so a false positive here would otherwise force a multi-gigabyte
+        # download on every single run with no way past it. Ask instead.
+        if gui_question "<b>Your iRacing folder is missing some expected files.</b>
+
+That usually means an install was interrupted partway through.
+
+The folder checked was:
+
+    <tt><b>$IRACING_STEAM_PATH</b></tt>
+
+<b>Run the iRacing installer later in this setup to repair it?</b>" "cancel"; then
+            IRACING_INSTALL_ACTION="repair"
+            SUMMARY_IRACING_FILES="Pending — repair install"
+            log "Step 5 — user opted to repair the partial install"
+        else
+            IRACING_INSTALL_ACTION="none"
+            SUMMARY_IRACING_FILES="Skipped — folder looked incomplete, user chose to continue"
+            log "Step 5 — user declined the repair install, continuing anyway"
+        fi
+        ;;
+    esac
+
+    log "Step 5 complete — state: $IRACING_FILE_STATE | planned action: $IRACING_INSTALL_ACTION"
 fi
 
 # =============================================================================
-# STEP 7 — Install Proton/Wine libraries
+# STEP 6 — Install custom Proton build
 # =============================================================================
-log "=== Step 7 — Proton Libraries ==="
-
-# Steam may have been reopened during Steps 5-7 (installing/verifying
-# iRacing), so re-confirm it's closed before running protontricks.
-ensure_steam_closed "<b>Steam needs to be closed before installing Proton libraries.</b>
-
-Please close Steam now, then click OK."
-log "Steam re-confirmed closed before Step 7"
-
-: >"$PROTONTRICKS_LOG.list"
-(run_redacted "$PROTONTRICKS_LOG.list" protontricks "$IRACING_APPID" list-installed) &
-LIST_PID=$!
-gui_wait $LIST_PID "Checking installed Proton libraries..."
-wait "$LIST_PID"
-LIST_EXIT=$?
-
-INSTALLED_LIST=$(cat "$PROTONTRICKS_LOG.list" 2>/dev/null || true)
-
-# A failed (or empty-output) list-installed almost always means the
-# Wine/Proton prefix itself can't run right now — most commonly an
-# incomplete or corrupted custom Proton build under
-# compatibilitytools.d (see Step 8's validity check) — rather than the
-# prefix genuinely having zero libraries. Treating that silently as
-# "13/13 missing" was masking the real problem and sending users
-# straight into a doomed force-install. Surface it instead.
-if [[ $LIST_EXIT -ne 0 ]] || [[ -z "$INSTALLED_LIST" ]]; then
-    log "[ERROR] protontricks list-installed failed (exit $LIST_EXIT, output ${#INSTALLED_LIST} bytes) — see $PROTONTRICKS_LOG.list"
-    gui_error "❌ Couldn't check which Proton libraries are already installed (protontricks list-installed failed).\n\nThis almost always means the Proton/Wine runtime currently assigned to iRacing can't start at all — often because a custom Proton build under:\n<tt>$COMPAT_TOOLS_DIR</tt>\nis incomplete or corrupted.\n\nTry deleting that Proton build's folder and re-running this setup so it can be freshly downloaded, then try again.\n\nRaw output saved to:\n<tt>$PROTONTRICKS_LOG.list</tt>"
-    # gui_error exits — the .list file is deliberately left on disk here
-    # (not cleaned up) so the user/support has the raw output to look at.
-fi
-rm -f "$PROTONTRICKS_LOG.list"
-
-REQUIRED_PKGS=(
-    vcrun2010 vcrun2012 vcrun2013 vcrun2015 vcrun2017 vcrun2022
-    d3dx9_43 d3dx10_43 d3dx11_43 d3dcompiler_43 xact xact_x64 xaudio29
-)
-
-MISSING=()
-for pkg in "${REQUIRED_PKGS[@]}"; do
-    if ! echo "$INSTALLED_LIST" | grep -qw "$pkg"; then
-        MISSING+=("$pkg")
-    fi
-done
-log "Proton library check: ${#MISSING[@]} of ${#REQUIRED_PKGS[@]} required libraries missing (${MISSING[*]:-none})"
-
-# original line with both font packages:
-# Install <b>corefonts</b> and <b>allfonts</b>?
-if gui_question "  <b>Optional Fonts</b>
-
-Install <b>corefonts</b>?
-
-These aren't required to play iRacing, but without them you might see
-text rendering oddly in-game or in the UI.
-
-⚠️  Warning: installing these can take a very long time.
-
-Click Yes to install fonts, No to skip." "cancel"; then
-    # commented out for disabling allfonts
-    #    for font_pkg in corefonts allfonts; do
-    #        if ! echo "$INSTALLED_LIST" | grep -qw "$font_pkg"; then
-    #            MISSING+=("$font_pkg")
-    #        fi
-    #    done
-    if ! echo "$INSTALLED_LIST" | grep -qw "corefonts"; then
-        MISSING+=("corefonts")
-    fi
-    log "Step 7 — user opted in to installing corefonts"
-else
-    log "Step 7 — user declined optional fonts"
-fi
-
-if [[ ${#MISSING[@]} -eq 0 ]]; then
-    log "Step 7 complete — all ${#REQUIRED_PKGS[@]} required Proton libraries already present"
-    gui_info "<b>All required Proton libraries are already installed.</b>"
-    SUMMARY_PROTON_LIBS="All ${#REQUIRED_PKGS[@]} libraries already present"
-else
-    gui_info "⏳ <b>Installing ${#MISSING[@]} Proton library/libraries...</b>
-
-This can take several minutes.
-
-Libraries to install:
-<tt>${MISSING[*]}</tt>
-
-Click OK and a progress window will appear."
-
-    PT_START_TS=$(date +%s)
-    : >"$PROTONTRICKS_LOG"
-    run_redacted "$PROTONTRICKS_LOG" protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" &
-    PT_PID=$!
-    gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
-    wait "$PT_PID"
-    PT_EXIT=$?
-    PT_ELAPSED=$(($(date +%s) - PT_START_TS))
-
-    if [[ $PT_EXIT -ne 0 ]]; then
-        log "[ERROR] protontricks force-install failed (exit $PT_EXIT) after ${PT_ELAPSED}s — see $PROTONTRICKS_LOG"
-        gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$PROTONTRICKS_LOG</tt>"
-    fi
-
-    log "Step 7 complete — ${#MISSING[@]} Proton libraries installed successfully in ${PT_ELAPSED}s"
-    gui_info "<b>All required Proton libraries are now installed.</b>"
-    SUMMARY_PROTON_LIBS="${#MISSING[@]} libraries installed"
-fi
-
-# =============================================================================
-# STEP 8 — Install custom Proton build
-# =============================================================================
-log "=== Step 8 — Custom Proton Build ==="
+log "=== Step 6 — Custom Proton Build ==="
 
 mkdir -p "$COMPAT_TOOLS_DIR"
 
-# A folder existing under compatibilitytools.d doesn't mean it's a
-# working Proton build — an interrupted download, a tar that got killed
-# partway, or a disk-full extraction can all leave a folder in place
-# with core pieces missing. Steam itself also refuses to list a
-# compatibility tool that's missing compatibilitytool.vdf. Checking only
-# `-d` here previously meant a corrupt leftover folder would be treated
-# as "already installed" forever, silently skipping the download every
-# run — and, downstream, is the same kind of breakage that shows up as
-# "wine: could not load kernel32.dll" when protontricks tries to use it.
-proton_build_looks_complete() {
-    local dir="$1"
-    [[ -f "$dir/compatibilitytool.vdf" ]] || return 1
-    [[ -f "$dir/proton" ]] || return 1
-    [[ -d "$dir/files" || -d "$dir/dist" ]] || return 1
-    return 0
-}
-
-# NOTE: deliberately NOT using api.github.com here — the REST API is capped
-# at 60 unauthenticated requests/hour per source IP, which is easy to hit
-# on shared/NAT'd connections (or just from repeatedly testing this
-# script). github.com/<repo>/releases/latest is a plain web redirect, not
-# part of the API, and isn't subject to that limit. We resolve the tag
-# from the redirect's Location header, then scrape the real asset
-# filename from the releases/expanded_assets/<tag> HTML fragment
-# (see below) — also not part of the API, also not rate-limited.
-GH_REPO="DanFraserUK/proton-cachyos"
 
 TAG_ERR_TMP=$(mktemp)
 (curl -fsSL -o /dev/null \
@@ -1796,8 +2202,6 @@ fi
 
 log "Latest release tag resolved via redirect: $LATEST_TAG"
 
-PROTON_DIR_NAME="$LATEST_TAG"
-
 # The release asset's filename doesn't always match the tag name — e.g.
 # tag "iracing-dnsapi-fix-11.0-20260601" actually ships an asset named
 # "iracing-dnsapi-fixmes.tar.xz". Guessing "<tag>.tar.xz" produces a
@@ -1819,16 +2223,46 @@ rm -f "$ASSETS_ERR_TMP"
 TARBALL_NAME=$(grep -oE "releases/download/${LATEST_TAG}/[^\"']+\.tar\.xz" <<<"$ASSETS_HTML" | head -n1 | sed -E 's#.*/##')
 
 if [[ -z "$TARBALL_NAME" ]]; then
-    log "[WARN] Couldn't find a .tar.xz asset via expanded_assets for tag $LATEST_TAG (curl exit $ASSETS_CURL_EXIT) — falling back to '<tag>.tar.xz' naming guess, which may 404"
+    # Loud on purpose. This is HTML scraping of a page GitHub can change
+    # without notice, and the fallback below is a naming guess that is
+    # already known to 404 for at least one live release tag. If this
+    # line starts showing up in user logs, the scrape has broken and the
+    # download is about to fail for everyone.
+    log "[WARN] ============================================================"
+    log "[WARN] expanded_assets scrape returned no .tar.xz for tag $LATEST_TAG"
+    log "[WARN] (curl exit $ASSETS_CURL_EXIT, ${#ASSETS_HTML} bytes of HTML)"
+    log "[WARN] GitHub's markup may have changed. Falling back to the"
+    log "[WARN] '<tag>.tar.xz' naming guess, which is expected to 404."
+    log "[WARN] ============================================================"
     TARBALL_NAME="${PROTON_DIR_NAME}.tar.xz"
+else
+    log "expanded_assets scrape resolved asset name: $TARBALL_NAME"
 fi
+
+# The extracted folder is named after the ASSET, not the tag. For the
+# live release the tag is "iracing-dnsapi-fix-11.0-20260601" but the
+# asset is "iracing-dnsapi-fixmes.tar.xz" and the folder inside is
+# "iracing-dnsapi-fixmes". Deriving this from the tag meant the
+# "already installed" check below looked for a folder that could never
+# exist, so a 300 MB build was re-downloaded on every single run, and
+# the post-extraction check then failed because overwriting the existing
+# folder produces no NEW folder for the snapshot diff to find.
+# Confirmed authoritatively from the tarball itself after download.
+PROTON_DIR_NAME="${TARBALL_NAME%.tar.xz}"
+log "Expected Proton folder name (from asset filename): $PROTON_DIR_NAME"
 
 TARBALL_URL="https://github.com/${GH_REPO}/releases/download/${LATEST_TAG}/${TARBALL_NAME}"
 TARBALL_TMP="/tmp/$TARBALL_NAME"
 log "Latest release asset: $TARBALL_NAME"
 
+COMPAT_AVAIL_GB=$(free_space_gb "$COMPAT_TOOLS_DIR")
+log "Step 6 — free space at $COMPAT_TOOLS_DIR: ${COMPAT_AVAIL_GB:-unknown} GB"
+if [[ -n "$COMPAT_AVAIL_GB" && "$COMPAT_AVAIL_GB" -lt 5 ]]; then
+    gui_error "❌ Not enough free space to download and extract the Proton build.\n\nLocation: <tt>$COMPAT_TOOLS_DIR</tt>\nFree space: <b>${COMPAT_AVAIL_GB} GB</b>\n\nFree up a few GB and re-run this setup."
+fi
+
 if [[ -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]] && proton_build_looks_complete "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"; then
-    log "Step 8 complete — $PROTON_DIR_NAME already present and looks complete, skipping download"
+    log "Step 6 complete — $PROTON_DIR_NAME already present and looks complete, skipping download"
     gui_info "<b>Custom Proton build is already installed and up to date.</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
     SUMMARY_PROTON_BUILD="Already installed ($PROTON_DIR_NAME)"
 else
@@ -1836,6 +2270,9 @@ else
         log "Existing $PROTON_DIR_NAME folder found but looks incomplete/corrupt (missing compatibilitytool.vdf, proton launcher, or files/dist) — removing and re-downloading"
         rm -rf "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"
     fi
+    if dry_skip "download $TARBALL_URL and extract into $COMPAT_TOOLS_DIR"; then
+        SUMMARY_PROTON_BUILD="Would install ($PROTON_DIR_NAME) [dry run]"
+    else
     DL_START_TS=$(date +%s)
     DL_ERR_TMP=$(mktemp)
     (curl -fSL -o "$TARBALL_TMP" "$TARBALL_URL" 2>"$DL_ERR_TMP") &
@@ -1864,6 +2301,17 @@ else
 
     # Snapshot existing top-level dirs so we can spot the newly-extracted one
     # even if the tarball's internal folder name doesn't match its filename.
+    # The tarball knows its own top-level directory, so ask it rather
+    # than inferring one. Falls through to the snapshot diff below if the
+    # listing is unreadable for any reason.
+    TAR_TOPDIR=$(tar -tf "$TARBALL_TMP" 2>/dev/null | head -n1 | cut -d/ -f1)
+    if [[ -n "$TAR_TOPDIR" && "$TAR_TOPDIR" != "$PROTON_DIR_NAME" ]]; then
+        log "Tarball's top-level folder is '$TAR_TOPDIR', not '$PROTON_DIR_NAME' — using the tarball's name"
+        PROTON_DIR_NAME="$TAR_TOPDIR"
+    elif [[ -n "$TAR_TOPDIR" ]]; then
+        log "Tarball top-level folder confirmed as '$TAR_TOPDIR'"
+    fi
+
     DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
 
     (run_redacted "$TECH_LOG" tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR") &
@@ -1885,7 +2333,7 @@ else
             log "Expected folder name '$PROTON_DIR_NAME' not found after extraction — using actual extracted folder '$(basename "$ACTUAL_DIR")' instead"
             PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
         else
-            log "[ERROR] Extraction finished but no new folder found in $COMPAT_TOOLS_DIR"
+            log "[ERROR] Extraction finished but $COMPAT_TOOLS_DIR/$PROTON_DIR_NAME is absent and no new folder appeared"
             gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$MANUAL_CMD</tt>"
         fi
     fi
@@ -1896,101 +2344,645 @@ else
     fi
 
     EXTRACTED_SIZE_MB=$(du -sm "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" 2>/dev/null | cut -f1)
-    log "Step 8 complete — custom Proton build installed as $PROTON_DIR_NAME (${EXTRACTED_SIZE_MB:-unknown} MB extracted)"
+    log "Step 6 complete — custom Proton build installed as $PROTON_DIR_NAME (${EXTRACTED_SIZE_MB:-unknown} MB extracted)"
     gui_info "<b>Custom Proton build installed!</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
     SUMMARY_PROTON_BUILD="Installed ($PROTON_DIR_NAME)"
+    fi
 fi
 
 # =============================================================================
-# STEP 9 — Auto-configure compatibility tool & launch options
+# STEP 7 — Assign the compatibility tool
 # =============================================================================
-# Best-effort: attempts a narrowly scoped edit to config.vdf (compat tool
-# override) and localconfig.vdf (launch options), verifies the write
-# actually landed, and restores from a fresh backup if anything looks
-# wrong. Falls back to manual instructions on the final screen for
-# anything it can't safely automate — most notably if CompatToolMapping
-# doesn't exist in config.vdf at all yet, in which case we deliberately
-# don't try to construct that nesting from scratch.
-log "=== Step 9 — Auto-Configuring Compatibility Tool & Launch Options ==="
+# Moved ahead of everything that touches protontricks. protontricks
+# resolves which Proton to use from this mapping, and the prefix bootstrap
+# in Step 8 needs a build to bootstrap with, so an unassigned tool used to
+# mean both of those ran against whatever Steam happened to have set (or
+# nothing at all) - which is what made a clean machine impossible to set
+# up in one pass.
+#
+# Best-effort within that: a narrowly scoped edit to config.vdf, verified
+# after writing, restored from a fresh backup if anything looks wrong.
+log "=== Step 7 — Assigning Compatibility Tool ==="
 
 SUMMARY_COMPAT_CONFIG="Not attempted"
+
+# The one and only "close Steam" prompt. Everything from here to the end
+# of the run needs it closed, so it's asked once rather than three times.
+ensure_steam_closed "<b>Steam needs to be closed for the rest of this setup.</b>
+
+Please close Steam now, then click OK.
+
+Leave it closed until the setup finishes."
+log "Steam confirmed closed before Step 7 — stays closed for the rest of the run"
+
+# Belt and braces: Steam rewrites config.vdf on every launch/exit, so
+# re-check immediately before writing rather than trusting the check from
+# a moment ago.
+if pgrep -x steam &>/dev/null; then
+    log "[ERROR] Step 7 — Steam still running immediately before config write"
+    gui_error "❌ Steam is still running, so the compatibility tool can't be set safely.\n\nEverything after this point depends on it, so setup can't continue.\n\nPlease close Steam completely and re-run this setup."
+fi
+
+CONFIG_VDF="$STEAM_ROOT/config/config.vdf"
+BACKUP_TS=$(date '+%Y%m%d-%H%M%S')
+
+# What goes into config.vdf is the tool's declared name, which is not
+# necessarily its folder name. PROTON_DIR_NAME stays the folder (Step 8
+# needs it to find the proton launcher on disk); PROTON_TOOL_NAME is
+# what Steam matches against.
+PROTON_TOOL_NAME=$(proton_tool_internal_name "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME")
+if [[ "$PROTON_TOOL_NAME" != "$PROTON_DIR_NAME" ]]; then
+    log "Step 7 — tool declares itself as '$PROTON_TOOL_NAME' (folder is '$PROTON_DIR_NAME'); using the declared name for Steam"
+else
+    log "Step 7 — tool name matches folder name: $PROTON_TOOL_NAME"
+fi
+
+if dry_skip "set iRacing's compatibility tool to $PROTON_DIR_NAME in config.vdf"; then
+    SUMMARY_COMPAT_CONFIG="Auto-configured ($PROTON_DIR_NAME) [dry run]"
+else
+
+# --- Compatibility tool (config.vdf) ---
+if [[ -f "$CONFIG_VDF" ]]; then
+    ctm=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
+    if [[ -n "$ctm" ]]; then
+        read -r _ ctm_start ctm_end <<<"$ctm"
+        cp "$CONFIG_VDF" "$CONFIG_VDF.bak-$BACKUP_TS"
+        log "Backed up config.vdf to config.vdf.bak-$BACKUP_TS"
+        prune_old_backups "$CONFIG_VDF"
+
+        appid_block=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm_start + 1))" "$((ctm_end - 1))" "$IRACING_APPID")
+        if [[ -n "$appid_block" ]]; then
+            read -r _ a_start a_end <<<"$appid_block"
+            OLD_COMPAT_NAME=$(sed -n "$((a_start + 1)),$((a_end - 1))p" "$CONFIG_VDF" | grep '"name"' | sed -E 's/.*"name"[^"]*"([^"]*)".*/\1/')
+            vdf_set_kv "$CONFIG_VDF" "$((a_start + 1))" "$((a_end - 1))" "name" "$PROTON_TOOL_NAME"
+            if [[ "$OLD_COMPAT_NAME" == "$PROTON_TOOL_NAME" ]]; then
+                log "Updated existing CompatToolMapping entry for $IRACING_APPID (unchanged: '$PROTON_TOOL_NAME')"
+            else
+                log "Updated existing CompatToolMapping entry for $IRACING_APPID (was: '${OLD_COMPAT_NAME:-<empty>}' -> now: '$PROTON_TOOL_NAME')"
+            fi
+        else
+            tmp_block=$(mktemp)
+            printf '\t\t\t\t\t"%s"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"%s"\n\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"priority"\t\t"250"\n\t\t\t\t\t}\n' \
+                "$IRACING_APPID" "$PROTON_TOOL_NAME" >"$tmp_block"
+            sed -i "${ctm_start}r $tmp_block" "$CONFIG_VDF"
+            rm -f "$tmp_block"
+            log "Inserted new CompatToolMapping entry for $IRACING_APPID"
+        fi
+
+        verify_ok=false
+        if vdf_brace_balanced "$CONFIG_VDF"; then
+            ctm2=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
+            if [[ -n "$ctm2" ]]; then
+                read -r _ ctm2_start ctm2_end <<<"$ctm2"
+                appid_block2=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm2_start + 1))" "$((ctm2_end - 1))" "$IRACING_APPID")
+                if [[ -n "$appid_block2" ]]; then
+                    read -r _ a2_start a2_end <<<"$appid_block2"
+                    sed -n "${a2_start},${a2_end}p" "$CONFIG_VDF" | grep -qF "\"$PROTON_TOOL_NAME\"" && verify_ok=true
+                fi
+            fi
+        fi
+
+        if $verify_ok; then
+            SUMMARY_COMPAT_CONFIG="Auto-configured ($PROTON_TOOL_NAME)"
+            log "Step 7 — compatibility tool auto-configured to $PROTON_TOOL_NAME (verified)"
+        else
+            cp "$CONFIG_VDF.bak-$BACKUP_TS" "$CONFIG_VDF"
+            SUMMARY_COMPAT_CONFIG="Auto-config failed — restored from backup"
+            log "[ERROR] Step 7 — compat tool write verification failed, restored config.vdf from backup"
+        fi
+    else
+        SUMMARY_COMPAT_CONFIG="Not found — CompatToolMapping section missing"
+        log "Step 7 — CompatToolMapping section not found in config.vdf, skipping automatic edit"
+    fi
+else
+    SUMMARY_COMPAT_CONFIG="Not found — config.vdf missing"
+    log "Step 7 — config.vdf not found at $CONFIG_VDF"
+fi
+
+
+fi
+
+# Unlike before, this is now a hard stop rather than a note on the final
+# screen. Steps 8, 9 and 10 all depend on the mapping being right, so
+# carrying on past a failure here just produces three more confusing
+# errors downstream instead of one clear one here.
+if [[ "$SUMMARY_COMPAT_CONFIG" != Auto-configured* ]]; then
+    log "[ERROR] Step 7 — compatibility tool not assigned ($SUMMARY_COMPAT_CONFIG), cannot continue"
+    gui_error "❌ Couldn't set iRacing's compatibility tool automatically.
+
+Reason: <b>$SUMMARY_COMPAT_CONFIG</b>
+
+The rest of this setup depends on it, so it can't continue. To set it by hand:
+
+  1. Open Steam, right-click <b>iRacing</b> -> <b>Properties</b> -> <b>Compatibility</b>
+  2. Tick <b>Force the use of a specific Steam Play compatibility tool</b>
+  3. Choose <b>${PROTON_TOOL_NAME:-$PROTON_DIR_NAME}</b>
+  4. Close Steam completely, then re-run this setup
+
+If <tt>${PROTON_TOOL_NAME:-$PROTON_DIR_NAME}</tt> isn't in that list, restart Steam once first — it only scans <tt>$COMPAT_TOOLS_DIR</tt> at startup."
+fi
+
+gui_info "<b>Compatibility tool:</b> $SUMMARY_COMPAT_CONFIG"
+log "Step 7 complete — $SUMMARY_COMPAT_CONFIG"
+
+# =============================================================================
+# STEP 8 — Bootstrap the Proton prefix
+# =============================================================================
+# Nothing in this script used to create compatdata/$IRACING_APPID. Steam
+# creates it the first time the game is launched with a compatibility
+# tool, but a Direct Account user has no game to launch yet, so both
+# protontricks-launch (Step 9) and protontricks (Step 10) were being asked
+# to work inside a prefix that didn't exist. That surfaced as the
+# "could not load kernel32.dll" failures.
+#
+# Running the Proton build directly with the two STEAM_COMPAT_* variables
+# set is exactly what Steam does on first launch, minus the game.
+log "=== Step 8 — Proton Prefix ==="
+
+SUMMARY_PREFIX="Not attempted"
+IRACING_COMPATDATA=$(iracing_compatdata_dir)
+PROTON_BIN="$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME/proton"
+
+log "Step 8 — prefix path: $IRACING_COMPATDATA"
+
+if [[ ! -x "$PROTON_BIN" ]]; then
+    log "[ERROR] Step 8 — Proton launcher not executable at $PROTON_BIN"
+    gui_error "❌ The Proton build's launcher is missing or not executable:\n\n<tt>$PROTON_BIN</tt>\n\nDelete <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt> and re-run this setup so it can be freshly downloaded."
+fi
+
+if prefix_looks_ready; then
+    log "Step 8 complete — prefix already present at $IRACING_COMPATDATA, skipping bootstrap"
+    SUMMARY_PREFIX="Already present"
+else
+    if dry_skip "bootstrap a Proton prefix at $IRACING_COMPATDATA"; then
+        SUMMARY_PREFIX="Would be created [dry run]"
+        # Step 10 needs to know the prefix isn't real, or its
+        # (read-only, so otherwise unguarded) protontricks query fails
+        # against a prefix that was never created.
+        DRY_PREFIX_SKIPPED=true
+        log "Step 8 complete — skipped (dry run)"
+    else
+    mkdir -p "$IRACING_COMPATDATA"
+
+    # Some Proton builds refuse to run outside the Steam Linux Runtime
+    # container. Try the plain invocation first (fast, and works for most
+    # builds), then fall back to the runtime entry point if one is
+    # installed. Both attempts get logged so a failure report shows which
+    # path was taken.
+    SLR_ENTRY=""
+    while IFS= read -r slr_lib; do
+        [[ -z "$slr_lib" ]] && continue
+        for slr in SteamLinuxRuntime_sniper SteamLinuxRuntime_soldier; do
+            [[ -x "$slr_lib/steamapps/common/$slr/_v2-entry-point" ]] && {
+                SLR_ENTRY="$slr_lib/steamapps/common/$slr/_v2-entry-point"
+                break 2
+            }
+        done
+    done < <(get_steam_libraries)
+    log "Step 8 — Steam Linux Runtime entry point: ${SLR_ENTRY:-none found}"
+
+    BOOTSTRAP_START_TS=$(date +%s)
+    : >"$PROTON_BOOTSTRAP_LOG"
+
+    # SteamAppId/STEAM_COMPAT_APP_ID are set because Steam always sets
+    # them: without one, protonfixes decides it's running under a unit
+    # test and skips every fix, so the prefix we build here would differ
+    # from the one Steam builds on first launch.
+    # MANGOHUD=0 keeps a globally-enabled overlay out of a headless run —
+    # it has nothing to draw on, and its chatter buries the Proton output
+    # this log exists to capture.
+    (
+        MANGOHUD=0 \
+            SteamAppId="$IRACING_APPID" \
+            STEAM_COMPAT_APP_ID="$IRACING_APPID" \
+            STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+            STEAM_COMPAT_DATA_PATH="$IRACING_COMPATDATA" \
+            run_redacted "$PROTON_BOOTSTRAP_LOG" "$PROTON_BIN" run cmd /c exit
+    ) &
+    BOOTSTRAP_PID=$!
+    gui_wait $BOOTSTRAP_PID "Preparing the Windows environment for iRacing...\n\nThis is a one-off and takes a minute or two."
+    wait "$BOOTSTRAP_PID"
+    BOOTSTRAP_EXIT=$?
+    log "Step 8 — direct bootstrap finished (exit $BOOTSTRAP_EXIT) after $(($(date +%s) - BOOTSTRAP_START_TS))s"
+
+    if ! prefix_looks_ready && [[ -n "$SLR_ENTRY" ]]; then
+        log "Step 8 — direct bootstrap didn't produce a usable prefix, retrying through $SLR_ENTRY"
+        (
+            MANGOHUD=0 \
+                SteamAppId="$IRACING_APPID" \
+                STEAM_COMPAT_APP_ID="$IRACING_APPID" \
+                STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+                STEAM_COMPAT_DATA_PATH="$IRACING_COMPATDATA" \
+                run_redacted "$PROTON_BOOTSTRAP_LOG" "$SLR_ENTRY" --verb=run -- "$PROTON_BIN" run cmd /c exit
+        ) &
+        BOOTSTRAP_PID=$!
+        gui_wait $BOOTSTRAP_PID "Preparing the Windows environment for iRacing...\n\nTrying again via the Steam Linux Runtime."
+        wait "$BOOTSTRAP_PID"
+        BOOTSTRAP_EXIT=$?
+        log "Step 8 — runtime bootstrap finished (exit $BOOTSTRAP_EXIT)"
+    fi
+
+    BOOTSTRAP_ELAPSED=$(($(date +%s) - BOOTSTRAP_START_TS))
+
+    # proton returns before wineserver has finished settling, so give the
+    # prefix a few seconds to finish appearing rather than declaring
+    # failure on a single check taken a moment too early.
+    settle=0
+    while ! prefix_looks_ready && [[ $settle -lt 10 ]]; do
+        sleep 1
+        settle=$((settle + 1))
+    done
+    [[ $settle -gt 0 ]] && log "Step 8 — prefix took ${settle}s to settle after proton returned"
+
+    if ! prefix_looks_ready; then
+        log "[ERROR] Step 8 — prefix bootstrap failed after ${BOOTSTRAP_ELAPSED}s, no system32 under $IRACING_COMPATDATA"
+        gui_error "❌ Couldn't prepare the Windows environment iRacing runs inside.
+
+Everything after this point needs it, so setup can't continue.
+
+Raw output is in:
+<tt>$PROTON_BOOTSTRAP_LOG</tt>
+
+You can also try it by hand — paste this single line into a terminal:
+
+<tt>SteamAppId=$IRACING_APPID STEAM_COMPAT_APP_ID=$IRACING_APPID STEAM_COMPAT_CLIENT_INSTALL_PATH=\"$STEAM_ROOT\" STEAM_COMPAT_DATA_PATH=\"$IRACING_COMPATDATA\" \"$PROTON_BIN\" run cmd /c exit</tt>"
+    fi
+
+    log "Step 8 complete — prefix bootstrapped at $IRACING_COMPATDATA in ${BOOTSTRAP_ELAPSED}s"
+    SUMMARY_PREFIX="Created (${BOOTSTRAP_ELAPSED}s)"
+    fi
+fi
+
+# =============================================================================
+# STEP 9 — Direct account: install via Windows installer
+# =============================================================================
+# The decision about whether this needs to run was made back in Step 5,
+# while Steam was still open. All that's left here is the part that needs
+# a working Proton runtime: a build (Step 6), an assignment (Step 7) and
+# a prefix (Step 8). Running this before any of those was the ordering
+# bug that made a clean machine impossible to set up in one pass.
+
+run_iracing_windows_installer_flow() {
+    local entry_reason="$1" # install | repair
+
+    log "Step 9 — entering Windows installer flow (reason: $entry_reason)"
+
+    # Under Proton, Z: maps to the real filesystem root "/", so the correct
+    # conversion is always "Z:" + the full path with slashes flipped —
+    # regardless of whether the path lives under $HOME or on another
+    # drive/library entirely. (Previously this only handled $HOME-relative
+    # paths and used the wrong folder name, breaking secondary libraries.)
+    IRACING_WIN_PATH="Z:${IRACING_STEAM_PATH//\//\\}"
+    # Convert backslashes to Pango HTML entities so zenity renders them correctly
+    IRACING_WIN_PATH_DISPLAY=$(echo "$IRACING_WIN_PATH" | sed 's/\\/\&#92;/g')
+
+    IRACING_DOWNLOAD_URL="https://members.iracing.com/download/member/noservice.jsp"
+
+    local opening
+    if [[ "$entry_reason" == "repair" ]]; then
+        opening="<b>Repairing your iRacing installation.</b>
+
+Some expected files were missing, so the iRacing installer will be run over the top of what's already there."
+    else
+        opening="<b>iRacing stub detected — the full game files aren't installed yet.</b>"
+    fi
+
+    gui_info "$opening
+
+You'll need to run the iRacing Windows installer.  Here's what to do:
+
+  1. Log into the iRacing members site in the browser window that opens
+  2. Download the Windows installer
+  3. Save it to your <b>Downloads</b> folder
+  4. Come back here — the rest is automatic
+
+Click OK to open the download page and continue."
+
+    if ! dry_skip "open $IRACING_DOWNLOAD_URL in a browser"; then
+        (xdg-open "$IRACING_DOWNLOAD_URL" >/dev/null 2>&1 &) 2>/dev/null
+        log "Opened iRacing download page via xdg-open"
+    fi
+
+    # xdg-open fails silently when there's no browser handler registered,
+    # which used to drop the user straight into polling for a file they
+    # were never prompted to fetch. Confirm rather than assume.
+    if ! gui_question "<b>The iRacing download page should have opened in your browser.</b>
+
+Log in, download the Windows installer, and save it here:
+
+    <tt><b>$DOWNLOADS_DIR</b></tt>
+
+<b>Did the page open, and has the download started?</b>" "cancel"; then
+        log "[WARN] Step 9 — user reported the browser did not open"
+        gui_warn "No problem — open this address yourself:
+
+<tt>$IRACING_DOWNLOAD_URL</tt>
+
+Log in, download the Windows installer, and save it to:
+<tt>$DOWNLOADS_DIR</tt>
+
+Click OK when the download has started."
+    fi
+
+    # Picks the installer with the latest embedded release date, not
+    # just the most recently modified file — a stray older copy dragged
+    # into Downloads (or a leftover partial download) shouldn't win
+    # just because of its mtime. Filenames look like
+    # iRacingInstaller_win_YYYY.MM.DD.NN.exe — sorted on the
+    # YYYY.MM.DD.NN portion numerically, dot-field by dot-field.
+    find_latest_iracing_installer() {
+        local f best="" best_key=""
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            local base date_part key
+            base=$(basename "$f")
+            date_part="${base#iRacingInstaller_win_}"
+            date_part="${date_part%.exe}"
+            # Zero-pad each dot-separated component to 4 digits so
+            # string comparison sorts the same as numeric comparison
+            # (handles YYYY.MM.DD.NN without needing `sort -V` quirks).
+            key=$(awk -F. '{ for (i=1;i<=NF;i++) printf "%04d.", $i }' <<<"$date_part")
+            if [[ -z "$best_key" || "$key" > "$best_key" ]]; then
+                best="$f"
+                best_key="$key"
+            fi
+        done < <(find "$DOWNLOADS_DIR" -maxdepth 1 -type f -size +1M -name 'iRacingInstaller_win_*.exe' 2>/dev/null)
+        echo "$best"
+    }
+
+    INSTALLER_EXE=""
+    installer_wait_attempt=0
+    installer_silent_checks=4  # ~8s silent
+    installer_patient_checks=6 # ~12s more with a visible "still looking" window
+    while [[ -z "$INSTALLER_EXE" ]]; do
+        installer_wait_attempt=$((installer_wait_attempt + 1))
+        INSTALLER_EXE=$(find_latest_iracing_installer)
+        [[ -n "$INSTALLER_EXE" ]] && break
+
+        if [[ $installer_wait_attempt -le $installer_silent_checks ]]; then
+            sleep 2
+        elif [[ $installer_wait_attempt -le $((installer_silent_checks + installer_patient_checks)) ]]; then
+            gui_open "Still looking for the installer in <tt>$DOWNLOADS_DIR</tt>...\n\nA real download can take a few minutes — hang tight."
+            sleep 2
+            gui_close
+        else
+            if ! zenity --question --title="$TITLE" --text="No iRacing installer found in <tt>$DOWNLOADS_DIR</tt> yet.\n\nHas the download finished? Click <b>Yes</b> to keep waiting, or <b>No</b> to quit." --ok-label="Yes, keep waiting" --cancel-label="No, quit" --width=500 2>/dev/null; then
+                log "User quit at Step 9 while waiting for the installer download"
+                exit 0
+            fi
+            installer_wait_attempt=0
+        fi
+    done
+
+    log "Installer found after $installer_wait_attempt polling pass(es)"
+
+    gui_info "Found installer: <tt>$(basename "$INSTALLER_EXE")</tt>
+
+The installer will now run on its own and install iRacing to the
+correct location in your Steam library:
+
+<tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>
+
+This takes a few minutes.  You won't see the installer's own window —
+a progress window will appear here instead.
+
+Click OK to begin."
+
+    INSTALLER_SIZE_MB=$(du -sm "$INSTALLER_EXE" 2>/dev/null | cut -f1)
+    log "Step 9 — installer file size: ${INSTALLER_SIZE_MB:-unknown} MB"
+
+    # Steam has been closed since Step 7 and stays closed to the end of
+    # the run, so there's no re-confirmation here any more — running the
+    # installer into a prefix Steam still has open risks file-lock
+    # conflicts, which is why it was closed once and left that way.
+    if dry_skip "run $(basename "$INSTALLER_EXE") into $IRACING_STEAM_PATH via protontricks-launch"; then
+        SUMMARY_IRACING_FILES="Would install via Windows installer [dry run]"
+        return 0
+    fi
+
+    log "Launching Windows installer: $INSTALLER_EXE -> $IRACING_STEAM_PATH"
+    INSTALL_START_TS=$(date +%s)
+    run_redacted "$TECH_LOG" protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" \
+        /SILENT /SUPPRESSMSGBOXES /NORESTART \
+        /DIR="$IRACING_WIN_PATH" &
+    INSTALL_PID=$!
+
+    gui_wait $INSTALL_PID "Installing iRacing...\n\nDestination:\n<tt>$IRACING_WIN_PATH_DISPLAY</tt>\n\nThis will take a few minutes, please wait."
+    wait "$INSTALL_PID"
+    INSTALL_EXIT=$?
+    INSTALL_ELAPSED=$(($(date +%s) - INSTALL_START_TS))
+    log "Windows installer finished (exit $INSTALL_EXIT) after ${INSTALL_ELAPSED}s"
+
+    # The installer's Inno [Run] entry launches the iRacing UI when it
+    # finishes, and /SILENT does not suppress it (confirmed: the shell
+    # returns while XALIA warnings from the launched UI keep arriving).
+    # That leaves processes holding the prefix open, which protontricks
+    # in Step 10 then has to contend with. Shut the prefix down cleanly
+    # before carrying on.
+    gui_open "Closing the iRacing launcher the installer opened..."
+    WINESERVER_BIN=""
+    for d in files dist; do
+        [[ -x "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME/$d/bin/wineserver" ]] && {
+            WINESERVER_BIN="$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME/$d/bin/wineserver"
+            break
+        }
+    done
+    if [[ -n "$WINESERVER_BIN" ]]; then
+        log "Shutting down prefix via $WINESERVER_BIN -k"
+        WINEPREFIX="$IRACING_COMPATDATA/pfx" run_redacted "$TECH_LOG" "$WINESERVER_BIN" -k || true
+        sleep 2
+    else
+        log "[WARN] Step 9 — no wineserver found under $COMPAT_TOOLS_DIR/$PROTON_DIR_NAME, cannot close the launcher the installer opened"
+    fi
+    gui_close
+
+    gui_open "Verifying iRacing installation..."
+    sleep 0.5
+    gui_close
+
+    # The old check counted top-level files and passed if there were more
+    # than three, which a partial install satisfies trivially — so a
+    # failed repair reported "installation confirmed" and put a tick on
+    # the summary screen. Verified against the installer layout rather
+    # than Steam's depot layout: a real run of the 2026.06.09.01
+    # installer produces the executables, EasyAntiCheat, ui and its own
+    # uninstaller, but no cars or tracks - the launcher fetches content
+    # on first run, so content folders are not something this script
+    # should ever wait for.
+
+    if ! iracing_fingerprint_complete "$IRACING_STEAM_PATH" verbose installer; then
+        log "[ERROR] Step 9 — post-install fingerprint check failed (installer exit $INSTALL_EXIT)"
+        gui_error "iRacing doesn't look like it installed correctly (installer exit code $INSTALL_EXIT).
+
+Expected location: <tt>$IRACING_STEAM_PATH</tt>
+
+Please re-run the installer and make sure the install path is set to:
+
+    <tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>
+
+Raw installer output is in:
+<tt>$TECH_LOG</tt>"
+    fi
+
+    IRACING_INSTALLED_SIZE_MB=$(du -sm "$IRACING_STEAM_PATH" 2>/dev/null | cut -f1)
+    log "Step 9 complete — install verified at $IRACING_STEAM_PATH"
+    log "Step 9 — final install size: ${IRACING_INSTALLED_SIZE_MB:-unknown} MB"
+    gui_info "<b>iRacing installation confirmed!</b>\n\nLocation: <tt>$IRACING_STEAM_PATH</tt>"
+    if [[ "$entry_reason" == "repair" ]]; then
+        SUMMARY_IRACING_FILES="Repaired via Windows installer"
+    else
+        SUMMARY_IRACING_FILES="Installed via Windows installer"
+    fi
+}
+
+if [[ "$IRACING_INSTALL_ACTION" != "none" ]]; then
+    log "=== Step 9 — Direct Account Installation ==="
+    run_iracing_windows_installer_flow "$IRACING_INSTALL_ACTION"
+else
+    log "=== Step 9 — skipped (no installer action planned) ==="
+fi
+
+# =============================================================================
+# STEP 10 — Install Proton/Wine libraries
+# =============================================================================
+log "=== Step 10 — Proton Libraries ==="
+
+# Steam was closed back in Step 7 and is meant to stay closed for the
+# rest of the run, but a user reopening it is a real possibility this
+# deep in, and protontricks against a live Steam is a file-lock hazard.
+# Cheap check, no prompt unless it's actually running.
+if pgrep -x steam &>/dev/null; then
+    log "[WARN] Step 10 — Steam reopened since Step 7, asking user to close it again"
+    ensure_steam_closed "<b>Steam has been reopened, and needs to be closed again.</b>
+
+Please close Steam now, then click OK."
+fi
+
+if ${DRY_PREFIX_SKIPPED:-false}; then
+    # No prefix was created this run, so there is nothing to query. An
+    # empty list means everything reads as missing, which then hits the
+    # dry-run guard on the install below and logs what a real run would
+    # have installed.
+    log "[DRY-RUN] would query protontricks for installed libraries (no prefix exists in a dry run)"
+    INSTALLED_LIST=""
+    LIST_EXIT=0
+else
+    : >"$PROTONTRICKS_LOG.list"
+    (run_redacted "$PROTONTRICKS_LOG.list" protontricks "$IRACING_APPID" list-installed) &
+    LIST_PID=$!
+    gui_wait $LIST_PID "Checking installed Proton libraries..."
+    wait "$LIST_PID"
+    LIST_EXIT=$?
+
+    INSTALLED_LIST=$(cat "$PROTONTRICKS_LOG.list" 2>/dev/null || true)
+fi
+
+# A failed (or empty-output) list-installed almost always means the
+# Wine/Proton prefix itself can't run right now — most commonly an
+# incomplete or corrupted custom Proton build under
+# compatibilitytools.d (see Step 6's validity check) — rather than the
+# prefix genuinely having zero libraries. Treating that silently as
+# "13/13 missing" was masking the real problem and sending users
+# straight into a doomed force-install. Surface it instead.
+if ! ${DRY_PREFIX_SKIPPED:-false} && { [[ $LIST_EXIT -ne 0 ]] || [[ -z "$INSTALLED_LIST" ]]; }; then
+    log "[ERROR] protontricks list-installed failed (exit $LIST_EXIT, output ${#INSTALLED_LIST} bytes) — see $PROTONTRICKS_LOG.list"
+    gui_error "❌ Couldn't check which Proton libraries are already installed (protontricks list-installed failed).\n\nThis almost always means the Proton/Wine runtime currently assigned to iRacing can't start at all — often because a custom Proton build under:\n<tt>$COMPAT_TOOLS_DIR</tt>\nis incomplete or corrupted.\n\nTry deleting that Proton build's folder and re-running this setup so it can be freshly downloaded, then try again.\n\nRaw output saved to:\n<tt>$PROTONTRICKS_LOG.list</tt>"
+    # gui_error exits — the .list file is deliberately left on disk here
+    # (not cleaned up) so the user/support has the raw output to look at.
+fi
+rm -f "$PROTONTRICKS_LOG.list"
+
+
+MISSING=()
+for pkg in "${REQUIRED_PKGS[@]}"; do
+    if ! echo "$INSTALLED_LIST" | grep -qw "$pkg"; then
+        MISSING+=("$pkg")
+    fi
+done
+log "Proton library check: ${#MISSING[@]} of ${#REQUIRED_PKGS[@]} required libraries missing (${MISSING[*]:-none})"
+
+# original line with both font packages:
+# Install <b>corefonts</b> and <b>allfonts</b>?
+if gui_question "<b>Optional fonts</b>
+
+<b>corefonts</b> isn't required to play iRacing, but without it you may see
+text rendering oddly in-game or in the UI.
+
+⚠️  Be aware this can take a very long time to install.
+
+<b>Install corefonts?</b>" "cancel"; then
+    # commented out for disabling allfonts
+    #    for font_pkg in corefonts allfonts; do
+    #        if ! echo "$INSTALLED_LIST" | grep -qw "$font_pkg"; then
+    #            MISSING+=("$font_pkg")
+    #        fi
+    #    done
+    if ! echo "$INSTALLED_LIST" | grep -qw "corefonts"; then
+        MISSING+=("corefonts")
+    fi
+    log "Step 10 — user opted in to installing corefonts"
+else
+    log "Step 10 — user declined optional fonts"
+fi
+
+if [[ ${#MISSING[@]} -eq 0 ]]; then
+    log "Step 10 complete — all ${#REQUIRED_PKGS[@]} required Proton libraries already present"
+    gui_info "<b>All required Proton libraries are already installed.</b>"
+    SUMMARY_PROTON_LIBS="All ${#REQUIRED_PKGS[@]} libraries already present"
+else
+    gui_info "⏳ <b>Installing ${#MISSING[@]} Proton library/libraries...</b>
+
+This can take several minutes.
+
+Libraries to install:
+<tt>${MISSING[*]}</tt>
+
+Click OK and a progress window will appear."
+
+    if dry_skip "install Proton libraries via protontricks: ${MISSING[*]}"; then
+        SUMMARY_PROTON_LIBS="Would install ${#MISSING[@]} libraries [dry run]"
+    else
+    PT_START_TS=$(date +%s)
+    : >"$PROTONTRICKS_LOG"
+    run_redacted "$PROTONTRICKS_LOG" protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" &
+    PT_PID=$!
+    gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
+    wait "$PT_PID"
+    PT_EXIT=$?
+    PT_ELAPSED=$(($(date +%s) - PT_START_TS))
+
+    if [[ $PT_EXIT -ne 0 ]]; then
+        log "[ERROR] protontricks force-install failed (exit $PT_EXIT) after ${PT_ELAPSED}s — see $PROTONTRICKS_LOG"
+        gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$PROTONTRICKS_LOG</tt>"
+    fi
+
+    log "Step 10 complete — ${#MISSING[@]} Proton libraries installed successfully in ${PT_ELAPSED}s"
+    gui_info "<b>All required Proton libraries are now installed.</b>"
+    SUMMARY_PROTON_LIBS="${#MISSING[@]} libraries installed"
+    fi
+fi
+
+# =============================================================================
+# STEP 11 — Auto-configure launch options
+# =============================================================================
+# Split from the compatibility tool write (now Step 7) because nothing
+# depends on launch options, so they can stay late where a failure is
+# only a note on the final screen rather than a hard stop.
+log "=== Step 11 — Auto-Configuring Launch Options ==="
+
 SUMMARY_LAUNCH_OPTIONS="Not attempted"
 IRACING_LAUNCH_OPTIONS='PROTON_LOG=1 LD_PRELOAD=\"\" %command%'
 
-ensure_steam_closed "<b>Steam needs to be closed before we can auto-configure the compatibility tool and launch options.</b>
-
-Please close Steam now, then click OK."
-log "Steam re-confirmed closed before Step 9"
-
-# Belt and braces: Steam rewrites both these files on every launch/exit,
-# so re-check immediately before writing rather than trusting the check
-# from a moment ago — a stray steam:// trigger or the user reopening it
-# manually is a real possibility this deep into the script.
+# Steam rewrites localconfig.vdf on every launch/exit, so re-check right
+# before writing rather than trusting Step 7's check. Unlike Step 7 this
+# is a skip, not a stop.
 if pgrep -x steam &>/dev/null; then
-    log "[ERROR] Step 9 — Steam still running immediately before config write, skipping automatic edit entirely"
-    SUMMARY_COMPAT_CONFIG="Skipped — Steam was running"
+    log "[ERROR] Step 11 — Steam running immediately before config write, skipping automatic edit"
     SUMMARY_LAUNCH_OPTIONS="Skipped — Steam was running"
+elif dry_skip "set iRacing's launch options to PROTON_LOG=1 in localconfig.vdf"; then
+    SUMMARY_LAUNCH_OPTIONS="Auto-configured (PROTON_LOG=1) [dry run]"
 else
-    CONFIG_VDF="$STEAM_ROOT/config/config.vdf"
     BACKUP_TS=$(date '+%Y%m%d-%H%M%S')
-
-    # --- Compatibility tool (config.vdf) ---
-    if [[ -f "$CONFIG_VDF" ]]; then
-        ctm=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
-        if [[ -n "$ctm" ]]; then
-            read -r _ ctm_start ctm_end <<<"$ctm"
-            cp "$CONFIG_VDF" "$CONFIG_VDF.bak-$BACKUP_TS"
-            log "Backed up config.vdf to config.vdf.bak-$BACKUP_TS"
-            prune_old_backups "$CONFIG_VDF"
-
-            appid_block=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm_start + 1))" "$((ctm_end - 1))" "$IRACING_APPID")
-            if [[ -n "$appid_block" ]]; then
-                read -r _ a_start a_end <<<"$appid_block"
-                OLD_COMPAT_NAME=$(sed -n "$((a_start + 1)),$((a_end - 1))p" "$CONFIG_VDF" | grep '"name"' | sed -E 's/.*"name"[^"]*"([^"]*)".*/\1/')
-                vdf_set_kv "$CONFIG_VDF" "$((a_start + 1))" "$((a_end - 1))" "name" "$PROTON_DIR_NAME"
-                if [[ "$OLD_COMPAT_NAME" == "$PROTON_DIR_NAME" ]]; then
-                    log "Updated existing CompatToolMapping entry for $IRACING_APPID (unchanged: '$PROTON_DIR_NAME')"
-                else
-                    log "Updated existing CompatToolMapping entry for $IRACING_APPID (was: '${OLD_COMPAT_NAME:-<empty>}' -> now: '$PROTON_DIR_NAME')"
-                fi
-            else
-                tmp_block=$(mktemp)
-                printf '\t\t\t\t\t"%s"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"%s"\n\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"priority"\t\t"250"\n\t\t\t\t\t}\n' \
-                    "$IRACING_APPID" "$PROTON_DIR_NAME" >"$tmp_block"
-                sed -i "${ctm_start}r $tmp_block" "$CONFIG_VDF"
-                rm -f "$tmp_block"
-                log "Inserted new CompatToolMapping entry for $IRACING_APPID"
-            fi
-
-            verify_ok=false
-            if vdf_brace_balanced "$CONFIG_VDF"; then
-                ctm2=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
-                if [[ -n "$ctm2" ]]; then
-                    read -r _ ctm2_start ctm2_end <<<"$ctm2"
-                    appid_block2=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm2_start + 1))" "$((ctm2_end - 1))" "$IRACING_APPID")
-                    if [[ -n "$appid_block2" ]]; then
-                        read -r _ a2_start a2_end <<<"$appid_block2"
-                        sed -n "${a2_start},${a2_end}p" "$CONFIG_VDF" | grep -qF "\"$PROTON_DIR_NAME\"" && verify_ok=true
-                    fi
-                fi
-            fi
-
-            if $verify_ok; then
-                SUMMARY_COMPAT_CONFIG="Auto-configured ($PROTON_DIR_NAME)"
-                log "Step 9 — compatibility tool auto-configured to $PROTON_DIR_NAME (verified)"
-            else
-                cp "$CONFIG_VDF.bak-$BACKUP_TS" "$CONFIG_VDF"
-                SUMMARY_COMPAT_CONFIG="Auto-config failed — restored from backup"
-                log "[ERROR] Step 9 — compat tool write verification failed, restored config.vdf from backup"
-            fi
-        else
-            SUMMARY_COMPAT_CONFIG="Not found — CompatToolMapping section missing"
-            log "Step 9 — CompatToolMapping section not found in config.vdf, skipping automatic edit"
-        fi
-    else
-        SUMMARY_COMPAT_CONFIG="Not found — config.vdf missing"
-        log "Step 9 — config.vdf not found at $CONFIG_VDF"
-    fi
 
     # --- Launch options (localconfig.vdf) — both Steam Purchase and
     # Direct Account get PROTON_LOG=1 now, for the same reason: it's the
@@ -2047,37 +3039,36 @@ else
 
                 if $verify_ok; then
                     SUMMARY_LAUNCH_OPTIONS="Auto-configured (PROTON_LOG=1)"
-                    log "Step 9 — launch options auto-configured (verified)"
+                    log "Step 11 — launch options auto-configured (verified)"
                 else
                     cp "$LOCALCONFIG_VDF.bak-$BACKUP_TS" "$LOCALCONFIG_VDF"
                     SUMMARY_LAUNCH_OPTIONS="Auto-config failed — restored from backup"
-                    log "[ERROR] Step 9 — launch options write verification failed, restored localconfig.vdf from backup"
+                    log "[ERROR] Step 11 — launch options write verification failed, restored localconfig.vdf from backup"
                 fi
             else
                 SUMMARY_LAUNCH_OPTIONS="Not found — apps section missing"
-                log "Step 9 — 'apps' section not found in localconfig.vdf, skipping automatic edit"
+                log "Step 11 — 'apps' section not found in localconfig.vdf, skipping automatic edit"
             fi
         else
             SUMMARY_LAUNCH_OPTIONS="Not found — localconfig.vdf missing"
-            log "Step 9 — localconfig.vdf not found at $LOCALCONFIG_VDF"
+            log "Step 11 — localconfig.vdf not found at $LOCALCONFIG_VDF"
         fi
     else
         SUMMARY_LAUNCH_OPTIONS="Not found — couldn't resolve Steam account folder"
-        log "Step 9 — could not resolve steamid3 under $STEAM_ROOT/userdata"
+        log "Step 11 — could not resolve steamid3 under $STEAM_ROOT/userdata"
     fi
 fi
 
-gui_info "<b>Compatibility tool:</b> $SUMMARY_COMPAT_CONFIG
-<b>Launch options:</b> $SUMMARY_LAUNCH_OPTIONS
+gui_info "<b>Launch options:</b> $SUMMARY_LAUNCH_OPTIONS
 
-If either of those says anything other than auto-configured, you'll find manual instructions for it on the final screen."
+If that says anything other than auto-configured, you'll find manual instructions for it on the final screen."
 
-log "Step 9 complete — compat config: $SUMMARY_COMPAT_CONFIG | launch options: $SUMMARY_LAUNCH_OPTIONS"
+log "Step 11 complete — launch options: $SUMMARY_LAUNCH_OPTIONS"
 
 # =============================================================================
-# STEP 10 — Optional extras
+# STEP 12 — Optional extras
 # =============================================================================
-log "=== Step 10 — Optional Extras ==="
+log "=== Step 12 — Optional Extras ==="
 
 # --- Backup /etc/hosts before touching it ---
 if [[ ! -f /etc/hosts.bak ]]; then
@@ -2090,31 +3081,15 @@ fi
 
 HOSTS_ENTRY="0.0.0.0 modules-cdn.eac-prod.on.epicgames.com"
 
-# The Proton prefix (compatdata) lives in whichever Steam library iRacing was
-# installed to — not necessarily the default library — so search all of them
-# the same way find_iracing_common_path() does, rather than hardcoding a path.
-find_iracing_compatdata_path() {
-    local lib candidate
-    while IFS= read -r lib; do
-        [[ -z "$lib" ]] && continue
-        candidate="$lib/steamapps/compatdata/$IRACING_APPID/pfx/drive_c/users/steamuser/Documents/iRacing"
-        [[ -d "$candidate" ]] && {
-            echo "$candidate"
-            return 0
-        }
-    done < <(get_steam_libraries)
-    return 1
-}
-
-IRACING_DOCS=$(find_iracing_compatdata_path)
-if [[ -z "$IRACING_DOCS" ]]; then
-    # Not created yet in any library — default to where Steam will create it
-    # for the default library, so the "not found yet" message below shows a
-    # sensible path even before the first launch.
-    IRACING_DOCS="$STEAM_APPS/compatdata/$IRACING_APPID/pfx/drive_c/users/steamuser/Documents/iRacing"
-    log "iRacing Documents folder not found in any library yet — defaulting to $IRACING_DOCS"
-else
+# Step 8 already resolved and created the prefix, so derive the Documents
+# folder from it rather than searching the libraries a second time. The
+# iRacing subfolder itself is created by the game on first launch, so it
+# still won't exist on a first run — the shortcut step below handles that.
+IRACING_DOCS="$IRACING_COMPATDATA/pfx/drive_c/users/steamuser/Documents/iRacing"
+if [[ -d "$IRACING_DOCS" ]]; then
     log "iRacing Documents folder found at $IRACING_DOCS"
+else
+    log "iRacing Documents folder not created yet — expected at $IRACING_DOCS"
 fi
 DOCS_LINK="$HOME/Documents/iRacing"
 
@@ -2149,11 +3124,15 @@ This blocks the EAC CDN by adding one line to your /etc/hosts file.
 potentially get your account banned.
 
 Want to apply this workaround?" "cancel"; then
+        if dry_skip "add '$HOSTS_ENTRY' to /etc/hosts"; then
+            SUMMARY_EAC="Would apply [dry run]"
+        else
         (echo "$HOSTS_ENTRY" | "${RUN_AS_ROOT[@]}" tee -a /etc/hosts >/dev/null) &
         gui_wait $! "Applying EAC workaround...\n\nA password prompt window may appear — enter your password there if asked."
         log "EAC hosts entry applied"
         gui_info "EAC workaround applied."
         SUMMARY_EAC="Applied"
+        fi
     else
         log "User declined the EAC workaround"
         SUMMARY_EAC="Skipped"
@@ -2161,20 +3140,61 @@ Want to apply this workaround?" "cancel"; then
 fi
 
 # --- Documents symlink ---
+# An existing symlink is not necessarily a working one. Moving iRacing to
+# another Steam library moves its prefix too, which leaves this pointing
+# at a path that no longer exists — and the old check ("is it a symlink?")
+# happily called that fine. Repoint it when it's stale, which covers both
+# a dangling link and one aimed at a different library's prefix.
 if [[ -L "$DOCS_LINK" ]]; then
-    log "~/Documents/iRacing shortcut already exists"
-    gui_info "<b>~/Documents/iRacing shortcut already exists.</b>"
-    SUMMARY_DOCS="Already exists"
+    DOCS_CURRENT_TARGET=$(readlink "$DOCS_LINK")
+    if [[ "$DOCS_CURRENT_TARGET" == "$IRACING_DOCS" && -d "$DOCS_LINK" ]]; then
+        log "Documents shortcut already points at the current prefix"
+        gui_info "<b>Documents shortcut already exists.</b>\n\n<tt>$DOCS_LINK</tt>"
+        SUMMARY_DOCS="Already exists"
+    elif [[ ! -d "$IRACING_DOCS" ]]; then
+        log "[WARN] Documents shortcut is stale (-> $DOCS_CURRENT_TARGET) but the current prefix has no iRacing Documents folder yet"
+        gui_warn "Your <tt>$DOCS_LINK</tt> shortcut points somewhere that no longer exists:\n\n<tt>$DOCS_CURRENT_TARGET</tt>\n\niRacing hasn't created its Documents folder in the current prefix yet, so it can't be repointed. Launch iRacing once, then re-run this setup."
+        SUMMARY_DOCS="Stale — target missing, launch iRacing first"
+    elif gui_question "<b>Your iRacing Documents shortcut is out of date.</b>
+
+This usually happens after moving iRacing to a different drive.
+
+It points here now, and this folder no longer exists:
+
+    <tt><b>$DOCS_CURRENT_TARGET</b></tt>
+
+iRacing actually keeps its files here:
+
+    <tt><b>$IRACING_DOCS</b></tt>
+
+<b>Update the shortcut to point at the new location?</b>"; then
+        if ! dry_skip "repoint $DOCS_LINK -> $IRACING_DOCS"; then
+            rm -f "$DOCS_LINK"
+            ln -s "$IRACING_DOCS" "$DOCS_LINK"
+        fi
+        log "Documents shortcut repointed (was: $DOCS_CURRENT_TARGET -> now: $IRACING_DOCS)"
+        gui_info "Shortcut updated.\n\n<tt>$DOCS_LINK</tt>"
+        SUMMARY_DOCS="Repointed to the current prefix"
+    else
+        log "User declined to repoint the stale Documents shortcut"
+        SUMMARY_DOCS="Stale — left as-is by choice"
+    fi
 elif [[ -d "$IRACING_DOCS" && ! -e "$DOCS_LINK" ]]; then
-    if gui_question "<b>iRacing Documents Shortcut</b>
+    if gui_question "<b>iRacing Documents shortcut</b>
 
-Steam on Linux stores your iRacing settings, car setups, and replays
-deep inside a hidden folder.  Want a shortcut created at:
+Steam on Linux keeps your iRacing settings, car setups and replays deep
+inside a hidden folder. A shortcut makes them easy to get to.
 
-<tt>~/Documents/iRacing</tt>
+It would be created here:
 
-This makes it easy to get to your setups and replays."; then
-        ln -s "$IRACING_DOCS" "$DOCS_LINK"
+    <tt><b>$DOCS_LINK</b></tt>
+
+pointing at:
+
+    <tt><b>$IRACING_DOCS</b></tt>
+
+<b>Create the shortcut?</b>"; then
+        dry_skip "symlink $DOCS_LINK -> $IRACING_DOCS" || ln -s "$IRACING_DOCS" "$DOCS_LINK"
         log "Documents shortcut created"
         gui_info "Shortcut created at <tt>~/Documents/iRacing</tt>"
         SUMMARY_DOCS="Created"
@@ -2188,7 +3208,7 @@ else
     SUMMARY_DOCS="Not yet - launch iRacing first"
 fi
 
-log "Step 10 complete — EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
+log "Step 12 complete — EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
 
 # =============================================================================
 # DONE — Summary screen then final instructions
@@ -2203,38 +3223,32 @@ SUMMARY_TEXT="<b>Setup Summary</b>
 <tt>iRacing files         </tt>${SUMMARY_IRACING_FILES}
 <tt>Proton libraries      </tt>${SUMMARY_PROTON_LIBS}
 <tt>Custom Proton build   </tt>${SUMMARY_PROTON_BUILD}
+<tt>Proton prefix         </tt>${SUMMARY_PREFIX}
 <tt>Compatibility tool    </tt>${SUMMARY_COMPAT_CONFIG}
 <tt>Launch options        </tt>${SUMMARY_LAUNCH_OPTIONS}
 <tt>EAC workaround        </tt>${SUMMARY_EAC}
 <tt>Documents shortcut    </tt>${SUMMARY_DOCS}
 <tt>─────────────────────────────────────────────────────</tt>"
 
-log "Setup summary — packages: $SUMMARY_PACKAGES | login: $SUMMARY_LOGIN | type: $SUMMARY_IRACING_TYPE | files: $SUMMARY_IRACING_FILES | proton libs: $SUMMARY_PROTON_LIBS | proton build: $SUMMARY_PROTON_BUILD | compat config: $SUMMARY_COMPAT_CONFIG | launch options: $SUMMARY_LAUNCH_OPTIONS | EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
+log "Setup summary — packages: $SUMMARY_PACKAGES | login: $SUMMARY_LOGIN | type: $SUMMARY_IRACING_TYPE | files: $SUMMARY_IRACING_FILES | proton libs: $SUMMARY_PROTON_LIBS | proton build: $SUMMARY_PROTON_BUILD | prefix: $SUMMARY_PREFIX | compat config: $SUMMARY_COMPAT_CONFIG | launch options: $SUMMARY_LAUNCH_OPTIONS | EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
 gui_info "$SUMMARY_TEXT"
 
-# Only show manual instructions for whichever half of Step 9 didn't
-# succeed automatically — a fully-automated run shouldn't ask the user to
-# redo work that's already done and verified.
-COMPAT_DONE=false
-[[ "$SUMMARY_COMPAT_CONFIG" == Auto-configured* ]] && COMPAT_DONE=true
+# Only the launch options can still be outstanding here: Step 7 exits on
+# a failed compatibility tool write, so reaching this point means that
+# one succeeded. The manual instructions for it live in Step 7's error
+# dialog rather than being duplicated below.
+COMPAT_DONE=true
 LAUNCH_DONE=false
 [[ "$SUMMARY_LAUNCH_OPTIONS" == Auto-configured* ]] && LAUNCH_DONE=true
 
-if $COMPAT_DONE && $LAUNCH_DONE; then
-    FINAL_STEPS="<b>Compatibility tool and launch options were already set for you</b> — <tt>$PROTON_DIR_NAME</tt> with <tt>PROTON_LOG=1</tt> enabled for troubleshooting.
+if $LAUNCH_DONE; then
+    FINAL_STEPS="<b>Compatibility tool and launch options were already set for you</b> — <tt>${PROTON_TOOL_NAME:-$PROTON_DIR_NAME}</tt> with <tt>PROTON_LOG=1</tt> enabled for troubleshooting.
 
 Open Steam and you're ready to race.
 
 If you ever want to double-check: Right-click iRacing -> Properties -> Compatibility, and Properties -> General -> Launch Options."
 else
     MANUAL_STEPS=""
-    if ! $COMPAT_DONE; then
-        MANUAL_STEPS="${MANUAL_STEPS}
-Right-click iRacing -> Properties -> Compatibility
-Tick: <i>Force the use of a specific Steam Play compatibility tool</i>
-Select: <b>$PROTON_DIR_NAME</b>
-"
-    fi
     if ! $LAUNCH_DONE; then
         MANUAL_STEPS="${MANUAL_STEPS}
 Right-click iRacing -> Properties -> General -> Launch Options, paste:
