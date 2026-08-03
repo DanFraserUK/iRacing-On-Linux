@@ -9,8 +9,8 @@
 # suffix if shipping more than once in a day). Bump it on every change
 # and tag the matching commit (e.g. `git tag v2026.07.14`) — the version
 # is logged as the very first line of every run, so any log a user sends
-# in shows at a glance which revision produced it.
-SCRIPT_VERSION="2026.07.14"
+# in tells you at a glance which revision produced it.
+SCRIPT_VERSION="2026.08.03"
 SCRIPT_START_TS=$(date +%s)
 
 # --- Paths ---
@@ -309,59 +309,6 @@ prune_old_backups() {
     done
 }
 
-# Verifies an extracted Proton build against a published integrity
-# manifest (a single sha256 of the whole tree, generated the same way at
-# release time: `find . -type f -exec sha256sum {} \; | sort -k2 |
-# sha256sum`). Catches corrupted/partial extractions that a simple "does
-# the folder exist" check would miss entirely — which is exactly what let
-# a partial extraction (missing files/bin) sit there silently reporting
-# "already installed" on every run until it finally broke protontricks
-# with a traceback.
-# The manifest lives in THIS repo (iRacing-On-Linux), not proton-cachyos —
-# committed alongside the setup script itself and fetched via
-# raw.githubusercontent.com, which is built for exactly this "many
-# clients, one small file" pattern and isn't subject to the throttling a
-# release-asset URL can see under repeated hits from many install runs.
-# Returns: 0 = verified match, 1 = mismatch (genuinely corrupted),
-#          2 = no manifest published for this tag (not a failure —
-#          older releases predate this check, so an unverifiable build
-#          is still treated as installed, just without the guarantee).
-IRACING_ON_LINUX_RAW_BASE="https://raw.githubusercontent.com/DanFraserUK/iRacing-On-Linux/main/iracing-setup-check/manifests"
-
-verify_proton_build() {
-    local dir="$1" tag="$2"
-    local manifest_url="${IRACING_ON_LINUX_RAW_BASE}/${tag}.manifest.sha256"
-    local manifest_tmp
-    manifest_tmp=$(mktemp)
-
-    if ! run_redacted "$TECH_LOG" curl -fsSL -o "$manifest_tmp" "$manifest_url"; then
-        rm -f "$manifest_tmp"
-        log "No integrity manifest found for $tag — skipping verification (older release, or not yet published)"
-        return 2
-    fi
-
-    local expected_hash
-    expected_hash=$(awk '{print $1; exit}' "$manifest_tmp")
-    rm -f "$manifest_tmp"
-
-    if [[ -z "$expected_hash" ]]; then
-        log "[WARN] Manifest for $tag downloaded but empty/unreadable — skipping verification"
-        return 2
-    fi
-
-    local actual_hash
-    actual_hash=$(cd "$dir" && find . -type f -exec sha256sum {} \; | sort -k2 | sha256sum | awk '{print $1}')
-
-    if [[ "$actual_hash" == "$expected_hash" ]]; then
-        log "Integrity check passed for $tag (sha256: $actual_hash)"
-        return 0
-    else
-        log "[ERROR] Integrity check FAILED for $tag — expected $expected_hash, got $actual_hash"
-        return 1
-    fi
-}
-
-
 # Resolve which userdata/<steamid3> folder belongs to the account that's
 # actually logged in, for locating localconfig.vdf. If only one account
 # has ever used this machine, that's an easy, unambiguous answer. If
@@ -414,8 +361,8 @@ get_steam_libraries() {
 }
 
 # Search every Steam library for an existing iRacing common/ folder.
-# Only needed for the Direct Account flow, where the exact install path
-# must be known to point the Windows installer's /DIR= switch correctly.
+# Only needed for the Direct Account flow, where we must know exactly
+# where to point the Windows installer's /DIR= switch.
 find_iracing_common_path() {
     local install_dir="$1" lib candidate
     while IFS= read -r lib; do
@@ -1007,7 +954,8 @@ install_if_missing() {
         gui_wait $install_pid "Installing <b>$pkg</b>...\n\nA password prompt window may appear — enter your password there if asked."
         if wait $install_pid; then
             DEBIAN_APT_UPDATED=true
-            log "$pkg installed successfully via apt-get"; PACKAGES_INSTALLED_THIS_RUN=true
+            log "$pkg installed successfully via apt-get"
+            PACKAGES_INSTALLED_THIS_RUN=true
         else
             local install_exit=$?
             log "[ERROR] $pkg install via apt-get failed (exit $install_exit) — see $TECH_LOG for apt/pipx output"
@@ -1032,7 +980,8 @@ install_if_missing() {
         local install_pid=$!
         gui_wait $install_pid "Installing <b>$pkg</b>...\n\nA password prompt window may appear — enter your password there if asked."
         if wait $install_pid; then
-            log "$pkg installed successfully via dnf"; PACKAGES_INSTALLED_THIS_RUN=true
+            log "$pkg installed successfully via dnf"
+            PACKAGES_INSTALLED_THIS_RUN=true
         else
             local install_exit=$?
             log "[ERROR] $pkg install via dnf failed (exit $install_exit) — see $TECH_LOG for dnf output"
@@ -1051,7 +1000,8 @@ install_if_missing() {
         local install_pid=$!
         gui_wait $install_pid "Installing <b>$pkg</b>...\n\nA password prompt window may appear — enter your password there if asked."
         if wait $install_pid; then
-            log "$pkg installed successfully via pacman"; PACKAGES_INSTALLED_THIS_RUN=true
+            log "$pkg installed successfully via pacman"
+            PACKAGES_INSTALLED_THIS_RUN=true
         else
             local install_exit=$?
             log "[ERROR] $pkg install via pacman failed (exit $install_exit) — see $TECH_LOG for pacman output"
@@ -1127,7 +1077,7 @@ if ! $steam_logged_in; then
 
     gui_warn "Steam doesn't appear to be logged in.\n\nPlease open Steam and log into your account, then click OK to continue."
 
-    # Check if the file has changed since the first check — if so, Steam wrote new login data
+    # Check if the file has been updated since we first looked — if so, Steam wrote new login data
     check_login_updated() {
         local current_mtime
         current_mtime=$(stat -c "%Y" "$LOGIN_VDF" 2>/dev/null || echo "0")
@@ -1234,8 +1184,8 @@ log "=== Step 4 — iRacing in Steam Library ==="
 # that was the bug that made Step 4 far less forgiving than every other
 # wait-loop in this script.
 wait_for_iracing_acf() {
-    local silent_checks=4   # ~8s silent
-    local patient_checks=6  # ~12s more with a visible "be patient" window
+    local silent_checks=4  # ~8s silent
+    local patient_checks=6 # ~12s more with a visible "be patient" window
     local attempt=0
     ACF_WAIT_TOTAL_LOOPS=0
 
@@ -1295,10 +1245,10 @@ else
     detect_iracing_depot
 fi
 
-# appmanifest exists but the depot type (Purchase vs Direct) still isn't
-# known — ask the user to check Steam directly rather than silently
-# skipping installation entirely (which is what used to happen: neither
-# Step 5 nor Step 6 would run if depot detection came back empty).
+# appmanifest exists but we still don't know Purchase vs Direct — ask the
+# user to check Steam directly rather than silently skipping installation
+# entirely (which is what used to happen: neither Step 5 nor Step 6 would
+# run if depot detection came back empty).
 if [[ -z "$IRACING_DEPOT_PURCHASE" && -z "$IRACING_DEPOT_DIRECT" ]]; then
     log "[WARN] Step 4 — appmanifest present but depot type undetermined; asking user to verify"
     gui_warn "iRacing was found in your library, but I couldn't confirm what's actually installed yet.
@@ -1572,7 +1522,7 @@ Click OK to open the download page and continue."
         # just the most recently modified file — a stray older copy dragged
         # into Downloads (or a leftover partial download) shouldn't win
         # just because of its mtime. Filenames look like
-        # iRacingInstaller_win_YYYY.MM.DD.NN.exe — sorted on the
+        # iRacingInstaller_win_YYYY.MM.DD.NN.exe — we sort on the
         # YYYY.MM.DD.NN portion numerically, dot-field by dot-field.
         find_latest_iracing_installer() {
             local f best="" best_key=""
@@ -1653,7 +1603,7 @@ Please close Steam now, then click OK."
         gui_wait $INSTALL_PID "Installing iRacing...\n\nDestination:\n<tt>$IRACING_WIN_PATH_DISPLAY</tt>\n\nThis will take a few minutes, please wait."
         wait "$INSTALL_PID"
         INSTALL_EXIT=$?
-        INSTALL_ELAPSED=$(( $(date +%s) - INSTALL_START_TS ))
+        INSTALL_ELAPSED=$(($(date +%s) - INSTALL_START_TS))
         log "Windows installer finished (exit $INSTALL_EXIT) after ${INSTALL_ELAPSED}s"
 
         gui_open "Verifying iRacing installation..."
@@ -1693,9 +1643,26 @@ log "Steam re-confirmed closed before Step 7"
 
 : >"$PROTONTRICKS_LOG.list"
 (run_redacted "$PROTONTRICKS_LOG.list" protontricks "$IRACING_APPID" list-installed) &
-gui_wait $! "Checking installed Proton libraries..."
+LIST_PID=$!
+gui_wait $LIST_PID "Checking installed Proton libraries..."
+wait "$LIST_PID"
+LIST_EXIT=$?
 
 INSTALLED_LIST=$(cat "$PROTONTRICKS_LOG.list" 2>/dev/null || true)
+
+# A failed (or empty-output) list-installed almost always means the
+# Wine/Proton prefix itself can't run right now — most commonly an
+# incomplete or corrupted custom Proton build under
+# compatibilitytools.d (see Step 8's validity check) — rather than the
+# prefix genuinely having zero libraries. Treating that silently as
+# "13/13 missing" was masking the real problem and sending users
+# straight into a doomed force-install. Surface it instead.
+if [[ $LIST_EXIT -ne 0 ]] || [[ -z "$INSTALLED_LIST" ]]; then
+    log "[ERROR] protontricks list-installed failed (exit $LIST_EXIT, output ${#INSTALLED_LIST} bytes) — see $PROTONTRICKS_LOG.list"
+    gui_error "❌ Couldn't check which Proton libraries are already installed (protontricks list-installed failed).\n\nThis almost always means the Proton/Wine runtime currently assigned to iRacing can't start at all — often because a custom Proton build under:\n<tt>$COMPAT_TOOLS_DIR</tt>\nis incomplete or corrupted.\n\nTry deleting that Proton build's folder and re-running this setup so it can be freshly downloaded, then try again.\n\nRaw output saved to:\n<tt>$PROTONTRICKS_LOG.list</tt>"
+    # gui_error exits — the .list file is deliberately left on disk here
+    # (not cleaned up) so the user/support has the raw output to look at.
+fi
 rm -f "$PROTONTRICKS_LOG.list"
 
 REQUIRED_PKGS=(
@@ -1758,7 +1725,7 @@ Click OK and a progress window will appear."
     gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
     wait "$PT_PID"
     PT_EXIT=$?
-    PT_ELAPSED=$(( $(date +%s) - PT_START_TS ))
+    PT_ELAPSED=$(($(date +%s) - PT_START_TS))
 
     if [[ $PT_EXIT -ne 0 ]]; then
         log "[ERROR] protontricks force-install failed (exit $PT_EXIT) after ${PT_ELAPSED}s — see $PROTONTRICKS_LOG"
@@ -1777,91 +1744,118 @@ log "=== Step 8 — Custom Proton Build ==="
 
 mkdir -p "$COMPAT_TOOLS_DIR"
 
+# A folder existing under compatibilitytools.d doesn't mean it's a
+# working Proton build — an interrupted download, a tar that got killed
+# partway, or a disk-full extraction can all leave a folder in place
+# with core pieces missing. Steam itself also refuses to list a
+# compatibility tool that's missing compatibilitytool.vdf. Checking only
+# `-d` here previously meant a corrupt leftover folder would be treated
+# as "already installed" forever, silently skipping the download every
+# run — and, downstream, is the same kind of breakage that shows up as
+# "wine: could not load kernel32.dll" when protontricks tries to use it.
+proton_build_looks_complete() {
+    local dir="$1"
+    [[ -f "$dir/compatibilitytool.vdf" ]] || return 1
+    [[ -f "$dir/proton" ]] || return 1
+    [[ -d "$dir/files" || -d "$dir/dist" ]] || return 1
+    return 0
+}
+
 # NOTE: deliberately NOT using api.github.com here — the REST API is capped
 # at 60 unauthenticated requests/hour per source IP, which is easy to hit
 # on shared/NAT'd connections (or just from repeatedly testing this
 # script). github.com/<repo>/releases/latest is a plain web redirect, not
-# part of the API, and isn't subject to that limit. The tag is resolved
-# from the redirect's Location header, then the asset URL is built by
-# convention (tag name == archive base name) instead of asking the API
-# to enumerate release assets.
+# part of the API, and isn't subject to that limit. We resolve the tag
+# from the redirect's Location header, then scrape the real asset
+# filename from the releases/expanded_assets/<tag> HTML fragment
+# (see below) — also not part of the API, also not rate-limited.
 GH_REPO="DanFraserUK/proton-cachyos"
 
-(run_redacted "$TECH_LOG" curl -fsSL -o /dev/null \
+TAG_ERR_TMP=$(mktemp)
+(curl -fsSL -o /dev/null \
     -D /tmp/iracing_latest_headers.txt \
-    "https://github.com/${GH_REPO}/releases/latest") &
-gui_wait $! "Checking for the latest custom Proton build..."
+    "https://github.com/${GH_REPO}/releases/latest" 2>"$TAG_ERR_TMP") &
+TAG_PID=$!
+gui_wait $TAG_PID "Checking for the latest custom Proton build..."
+wait "$TAG_PID"
+TAG_CURL_EXIT=$?
 
 LATEST_TAG=$(grep -i '^location:' /tmp/iracing_latest_headers.txt 2>/dev/null | tail -n1 | sed -E 's#.*/releases/tag/([^[:space:]/]+).*#\1#' | tr -d '\r')
 rm -f /tmp/iracing_latest_headers.txt
 
+TAG_ERR_MSG=$(redact_path "$(cat "$TAG_ERR_TMP" 2>/dev/null)")
+{ echo "[resolve latest tag, curl exit $TAG_CURL_EXIT]"; echo "$TAG_ERR_MSG"; } >>"$TECH_LOG"
+rm -f "$TAG_ERR_TMP"
+
 if [[ -z "$LATEST_TAG" ]]; then
-    log "[ERROR] Couldn't resolve latest release tag from github.com redirect"
-    gui_error "❌ Couldn't reach GitHub.\n\nPlease check your internet connection and try again.\n\nManual download:\n<tt>https://github.com/${GH_REPO}/releases</tt>\n\nExtract to: <tt>$COMPAT_TOOLS_DIR</tt>"
+    log "[ERROR] Couldn't resolve latest release tag from github.com redirect (curl exit $TAG_CURL_EXIT): ${TAG_ERR_MSG:-no error output}"
+    gui_error "❌ Couldn't reach GitHub (curl exit $TAG_CURL_EXIT).\n\nCheck your internet connection and try re-running this setup.\n\nOr paste this into a terminal to see the releases page directly:\n\n<tt>xdg-open https://github.com/${GH_REPO}/releases</tt>\n\nThen download the latest .tar.xz and extract it into:\n<tt>$COMPAT_TOOLS_DIR</tt>"
 fi
 
 log "Latest release tag resolved via redirect: $LATEST_TAG"
 
 PROTON_DIR_NAME="$LATEST_TAG"
-TARBALL_NAME="${PROTON_DIR_NAME}.tar.xz"
+
+# The release asset's filename doesn't always match the tag name — e.g.
+# tag "iracing-dnsapi-fix-11.0-20260601" actually ships an asset named
+# "iracing-dnsapi-fixmes.tar.xz". Guessing "<tag>.tar.xz" produces a
+# silent 404 that looks exactly like a network failure. GitHub's
+# releases/expanded_assets/<tag> endpoint returns the asset list as the
+# same HTML fragment used by the "Assets" disclosure on the releases
+# page — it isn't part of the REST API, so it isn't subject to the
+# 60/hour unauthenticated rate limit either.
+ASSETS_ERR_TMP=$(mktemp)
+ASSETS_HTML=$(curl -fsSL "https://github.com/${GH_REPO}/releases/expanded_assets/${LATEST_TAG}" 2>"$ASSETS_ERR_TMP")
+ASSETS_CURL_EXIT=$?
+ASSETS_ERR_MSG=$(redact_path "$(cat "$ASSETS_ERR_TMP" 2>/dev/null)")
+{ echo "[list release assets, curl exit $ASSETS_CURL_EXIT]"; echo "$ASSETS_ERR_MSG"; } >>"$TECH_LOG"
+rm -f "$ASSETS_ERR_TMP"
+
+TARBALL_NAME=$(grep -oE "releases/download/${LATEST_TAG}/[^\"']+\.tar\.xz" <<<"$ASSETS_HTML" | head -n1 | sed -E 's#.*/##')
+
+if [[ -z "$TARBALL_NAME" ]]; then
+    log "[WARN] Couldn't find a .tar.xz asset via expanded_assets for tag $LATEST_TAG (curl exit $ASSETS_CURL_EXIT) — falling back to '<tag>.tar.xz' naming guess, which may 404"
+    TARBALL_NAME="${PROTON_DIR_NAME}.tar.xz"
+fi
+
 TARBALL_URL="https://github.com/${GH_REPO}/releases/download/${LATEST_TAG}/${TARBALL_NAME}"
 TARBALL_TMP="/tmp/$TARBALL_NAME"
 log "Latest release asset: $TARBALL_NAME"
 
-if [[ -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
-    gui_open "Verifying existing Proton build..."
-    verify_proton_build "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" "$LATEST_TAG"
-    verify_result=$?
-    gui_close
-
-    case $verify_result in
-    0)
-        log "Step 8 complete — $PROTON_DIR_NAME already present and verified, skipping download"
-        gui_info "<b>Custom Proton build is already installed and verified.</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
-        SUMMARY_PROTON_BUILD="Already installed, verified ($PROTON_DIR_NAME)"
-        NEED_PROTON_DOWNLOAD=false
-        ;;
-    1)
-        log "Existing Proton build failed integrity check — removing and will redownload"
-        gui_warn "<b>The installed custom Proton build looks corrupted</b> (failed an integrity check).
-
-This can happen after an interrupted extraction — for example, running low on disk space partway through.
-
-It'll be automatically redownloaded now."
-        rm -rf "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"
-        NEED_PROTON_DOWNLOAD=true
-        ;;
-    2)
-        log "No manifest available for $LATEST_TAG — treating existing folder as installed without verification"
-        gui_info "<b>Custom Proton build is already installed.</b>\n\n<tt>$PROTON_DIR_NAME</tt>\n\n<i>(No integrity manifest available for this release, so this couldn't be verified.)</i>"
-        SUMMARY_PROTON_BUILD="Already installed, unverified ($PROTON_DIR_NAME)"
-        NEED_PROTON_DOWNLOAD=false
-        ;;
-    esac
+if [[ -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]] && proton_build_looks_complete "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"; then
+    log "Step 8 complete — $PROTON_DIR_NAME already present and looks complete, skipping download"
+    gui_info "<b>Custom Proton build is already installed and up to date.</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
+    SUMMARY_PROTON_BUILD="Already installed ($PROTON_DIR_NAME)"
 else
-    NEED_PROTON_DOWNLOAD=true
-fi
-
-if $NEED_PROTON_DOWNLOAD; then
+    if [[ -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
+        log "Existing $PROTON_DIR_NAME folder found but looks incomplete/corrupt (missing compatibilitytool.vdf, proton launcher, or files/dist) — removing and re-downloading"
+        rm -rf "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"
+    fi
     DL_START_TS=$(date +%s)
-    (run_redacted "$TECH_LOG" curl -fsSL -o "$TARBALL_TMP" "$TARBALL_URL") &
+    DL_ERR_TMP=$(mktemp)
+    (curl -fSL -o "$TARBALL_TMP" "$TARBALL_URL" 2>"$DL_ERR_TMP") &
     DL_PID=$!
     gui_wait $DL_PID "Downloading custom Proton build...\n\n<tt>$TARBALL_NAME</tt>"
     wait "$DL_PID"
     DL_EXIT=$?
-    DL_ELAPSED=$(( $(date +%s) - DL_START_TS ))
+    DL_ELAPSED=$(($(date +%s) - DL_START_TS))
+
+    DL_ERR_MSG=$(redact_path "$(cat "$DL_ERR_TMP" 2>/dev/null)")
+    { echo "[download tarball, curl exit $DL_EXIT]"; echo "$DL_ERR_MSG"; } >>"$TECH_LOG"
+    rm -f "$DL_ERR_TMP"
+
+    MANUAL_CMD="mkdir -p \"$COMPAT_TOOLS_DIR\" && curl -fL -o \"/tmp/$TARBALL_NAME\" \"$TARBALL_URL\" && tar -xf \"/tmp/$TARBALL_NAME\" -C \"$COMPAT_TOOLS_DIR\" && rm -f \"/tmp/$TARBALL_NAME\""
 
     if [[ $DL_EXIT -ne 0 ]] || [[ ! -s "$TARBALL_TMP" ]]; then
-        log "[ERROR] Proton build download failed (exit $DL_EXIT) after ${DL_ELAPSED}s"
+        log "[ERROR] Proton build download failed (curl exit $DL_EXIT) after ${DL_ELAPSED}s: ${DL_ERR_MSG:-no error output}"
         rm -f "$TARBALL_TMP"
-        gui_error "❌ Download failed.\n\nPlease check your internet connection and try again."
+        gui_error "❌ Download failed (curl exit $DL_EXIT).\n\nCheck your internet connection and try re-running this setup.\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$MANUAL_CMD</tt>"
     fi
     TARBALL_SIZE_MB=$(du -sm "$TARBALL_TMP" 2>/dev/null | cut -f1)
     log "Downloaded $TARBALL_NAME successfully (${TARBALL_SIZE_MB:-unknown} MB in ${DL_ELAPSED}s)"
 
-    # Snapshot existing top-level dirs so the newly-extracted one can be
-    # spotted even if the tarball's internal folder name doesn't match its
-    # filename.
+    # Snapshot existing top-level dirs so we can spot the newly-extracted one
+    # even if the tarball's internal folder name doesn't match its filename.
     DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
 
     (run_redacted "$TECH_LOG" tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR") &
@@ -1873,7 +1867,7 @@ if $NEED_PROTON_DOWNLOAD; then
 
     if [[ $TAR_EXIT -ne 0 ]]; then
         log "[ERROR] tar extraction failed (exit $TAR_EXIT)"
-        gui_error "❌ Extraction failed.\n\nCheck the log:\n<tt>$TECH_LOG</tt>"
+        gui_error "❌ Extraction failed (tar exit $TAR_EXIT).\n\nCheck the log:\n<tt>$TECH_LOG</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$MANUAL_CMD</tt>"
     fi
 
     if [[ ! -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
@@ -1884,39 +1878,16 @@ if $NEED_PROTON_DOWNLOAD; then
             PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
         else
             log "[ERROR] Extraction finished but no new folder found in $COMPAT_TOOLS_DIR"
-            gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nCheck <tt>$COMPAT_TOOLS_DIR</tt> by hand and pick the extracted folder as your compatibility tool in Steam."
+            gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$MANUAL_CMD</tt>"
         fi
     fi
 
+    if ! proton_build_looks_complete "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"; then
+        log "[ERROR] Extraction finished but $PROTON_DIR_NAME is missing expected files (compatibilitytool.vdf, proton launcher, or files/dist) — likely a truncated download or interrupted extraction"
+        gui_error "❌ The Proton build was extracted but looks incomplete.\n\nExpected files weren't found in:\n<tt>$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME</tt>\n\nThis is usually a truncated download. Re-running this setup will remove and re-download it automatically — or paste this single line into a terminal to do it manually:\n\n<tt>$MANUAL_CMD</tt>"
+    fi
+
     EXTRACTED_SIZE_MB=$(du -sm "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" 2>/dev/null | cut -f1)
-
-    # Verify the fresh extraction immediately — catches a bad
-    # download/extraction (e.g. disk ran out of space mid-write) right
-    # now, loudly, instead of it silently sitting there as "installed"
-    # and only surfacing weeks later as a cryptic protontricks traceback.
-    gui_open "Verifying extracted Proton build..."
-    verify_proton_build "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" "$LATEST_TAG"
-    fresh_verify_result=$?
-    gui_close
-
-    case $fresh_verify_result in
-    1)
-        log "[ERROR] Freshly extracted build failed integrity check — download or extraction was corrupted"
-        rm -rf "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"
-        gui_error "❌ The downloaded Proton build failed an integrity check after extracting.
-
-This usually means the download or extraction was interrupted — for example, running low on disk space partway through.
-
-Please check available disk space, then re-run this setup to try again."
-        ;;
-    2)
-        log "No manifest available for $LATEST_TAG — skipping post-extraction verification"
-        ;;
-    *)
-        log "Fresh extraction verified against manifest"
-        ;;
-    esac
-
     log "Step 8 complete — custom Proton build installed as $PROTON_DIR_NAME (${EXTRACTED_SIZE_MB:-unknown} MB extracted)"
     gui_info "<b>Custom Proton build installed!</b>\n\n<tt>$PROTON_DIR_NAME</tt>"
     SUMMARY_PROTON_BUILD="Installed ($PROTON_DIR_NAME)"
@@ -1930,8 +1901,8 @@ fi
 # actually landed, and restores from a fresh backup if anything looks
 # wrong. Falls back to manual instructions on the final screen for
 # anything it can't safely automate — most notably if CompatToolMapping
-# doesn't exist in config.vdf at all yet, in which case this deliberately
-# avoids constructing that nesting from scratch.
+# doesn't exist in config.vdf at all yet, in which case we deliberately
+# don't try to construct that nesting from scratch.
 log "=== Step 9 — Auto-Configuring Compatibility Tool & Launch Options ==="
 
 SUMMARY_COMPAT_CONFIG="Not attempted"
@@ -2281,6 +2252,6 @@ Open Steam and enjoy your racing!"
 # ^ Dedicated to PabloPGZ — the reason this script exists in the first place.
 # Also just a little joke for whoever runs it.  Feel free to leave it in :)
 
-SCRIPT_ELAPSED=$(( $(date +%s) - SCRIPT_START_TS ))
+SCRIPT_ELAPSED=$(($(date +%s) - SCRIPT_START_TS))
 SCRIPT_ELAPSED_FMT=$(printf '%dm%02ds' $((SCRIPT_ELAPSED / 60)) $((SCRIPT_ELAPSED % 60)))
 log "Setup complete — compatibility tool: $PROTON_DIR_NAME | compat auto-config: $COMPAT_DONE | launch options auto-config: $LAUNCH_DONE | total runtime: $SCRIPT_ELAPSED_FMT"
