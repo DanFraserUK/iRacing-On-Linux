@@ -10,7 +10,7 @@
 # and tag the matching commit (e.g. `git tag v2026.07.24`) — the version
 # is logged as the very first line of every run, so any log a user sends
 # in shows at a glance which revision produced it.
-SCRIPT_VERSION="2026.08.03.14"
+SCRIPT_VERSION="2026.08.03.15"
 SCRIPT_START_TS=$(date +%s)
 
 # --- Arguments ---
@@ -1248,7 +1248,6 @@ Every action it would have taken is written to:
 <tt>$(pe "$GENERAL_LOG")</tt>"
 fi
 
-
 # =============================================================================
 # TEST MODE — report on an existing install, change nothing
 # =============================================================================
@@ -2243,7 +2242,6 @@ log "=== Step 6 — Custom Proton Build ==="
 
 mkdir -p "$COMPAT_TOOLS_DIR"
 
-
 TAG_ERR_TMP=$(mktemp)
 (curl -fsSL -o /dev/null \
     -D /tmp/iracing_latest_headers.txt \
@@ -2343,82 +2341,82 @@ else
     if dry_skip "download $TARBALL_URL and extract into $COMPAT_TOOLS_DIR"; then
         SUMMARY_PROTON_BUILD="Would install ($PROTON_DIR_NAME) [dry run]"
     else
-    DL_START_TS=$(date +%s)
-    DL_ERR_TMP=$(mktemp)
-    (curl -fSL -o "$TARBALL_TMP" "$TARBALL_URL" 2>"$DL_ERR_TMP") &
-    DL_PID=$!
-    gui_wait $DL_PID "Downloading custom Proton build...\n\n<tt>$TARBALL_NAME</tt>"
-    wait "$DL_PID"
-    DL_EXIT=$?
-    DL_ELAPSED=$(($(date +%s) - DL_START_TS))
+        DL_START_TS=$(date +%s)
+        DL_ERR_TMP=$(mktemp)
+        (curl -fSL -o "$TARBALL_TMP" "$TARBALL_URL" 2>"$DL_ERR_TMP") &
+        DL_PID=$!
+        gui_wait $DL_PID "Downloading custom Proton build...\n\n<tt>$TARBALL_NAME</tt>"
+        wait "$DL_PID"
+        DL_EXIT=$?
+        DL_ELAPSED=$(($(date +%s) - DL_START_TS))
 
-    DL_ERR_MSG=$(redact_path "$(cat "$DL_ERR_TMP" 2>/dev/null)")
-    {
-        echo "[download tarball, curl exit $DL_EXIT]"
-        echo "$DL_ERR_MSG"
-    } >>"$TECH_LOG"
-    rm -f "$DL_ERR_TMP"
+        DL_ERR_MSG=$(redact_path "$(cat "$DL_ERR_TMP" 2>/dev/null)")
+        {
+            echo "[download tarball, curl exit $DL_EXIT]"
+            echo "$DL_ERR_MSG"
+        } >>"$TECH_LOG"
+        rm -f "$DL_ERR_TMP"
 
-    MANUAL_CMD="mkdir -p \"$COMPAT_TOOLS_DIR\" && curl -fL -o \"/tmp/$TARBALL_NAME\" \"$TARBALL_URL\" && tar -xf \"/tmp/$TARBALL_NAME\" -C \"$COMPAT_TOOLS_DIR\" && rm -f \"/tmp/$TARBALL_NAME\""
+        MANUAL_CMD="mkdir -p \"$COMPAT_TOOLS_DIR\" && curl -fL -o \"/tmp/$TARBALL_NAME\" \"$TARBALL_URL\" && tar -xf \"/tmp/$TARBALL_NAME\" -C \"$COMPAT_TOOLS_DIR\" && rm -f \"/tmp/$TARBALL_NAME\""
 
-    if [[ $DL_EXIT -ne 0 ]] || [[ ! -s "$TARBALL_TMP" ]]; then
-        log "[ERROR] Proton build download failed (curl exit $DL_EXIT) after ${DL_ELAPSED}s: ${DL_ERR_MSG:-no error output}"
-        rm -f "$TARBALL_TMP"
-        gui_error "❌ Download failed (curl exit $DL_EXIT).\n\nCheck your internet connection and try re-running this setup.\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
-    fi
-    TARBALL_SIZE_MB=$(du -sm "$TARBALL_TMP" 2>/dev/null | cut -f1)
-    log "Downloaded $TARBALL_NAME successfully (${TARBALL_SIZE_MB:-unknown} MB in ${DL_ELAPSED}s)"
-
-    # Snapshot top-level dirs to spot the newly-extracted one even if the
-    # tarball's internal folder name doesn't match its filename.
-    # The tarball knows its own top-level directory, so ask it rather
-    # than inferring one. Falls through to the snapshot diff below if the
-    # listing is unreadable for any reason.
-    TAR_TOPDIR=$(tar -tf "$TARBALL_TMP" 2>/dev/null | head -n1 | cut -d/ -f1)
-    if [[ -n "$TAR_TOPDIR" && "$TAR_TOPDIR" != "$PROTON_DIR_NAME" ]]; then
-        log "Tarball's top-level folder is '$TAR_TOPDIR', not '$PROTON_DIR_NAME' — using the tarball's name"
-        PROTON_DIR_NAME="$TAR_TOPDIR"
-    elif [[ -n "$TAR_TOPDIR" ]]; then
-        log "Tarball top-level folder confirmed as '$TAR_TOPDIR'"
-    fi
-
-    DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
-
-    # No --no-same-owner or path-traversal guard: a hostile tarball could
-    # write outside COMPAT_TOOLS_DIR. Same trust boundary as above.
-    (run_redacted "$TECH_LOG" tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR") &
-    TAR_PID=$!
-    gui_wait $TAR_PID "Extracting Proton build...\n\nAlmost done!"
-    wait "$TAR_PID"
-    TAR_EXIT=$?
-    rm -f "$TARBALL_TMP"
-
-    if [[ $TAR_EXIT -ne 0 ]]; then
-        log "[ERROR] tar extraction failed (exit $TAR_EXIT)"
-        gui_error "❌ Extraction failed (tar exit $TAR_EXIT).\n\nCheck the log:\n<tt>$(pe "$TECH_LOG")</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
-    fi
-
-    if [[ ! -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
-        DIRS_AFTER=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
-        ACTUAL_DIR=$(comm -13 <(echo "$DIRS_BEFORE") <(echo "$DIRS_AFTER") | head -n1)
-        if [[ -n "$ACTUAL_DIR" ]]; then
-            log "Expected folder name '$PROTON_DIR_NAME' not found after extraction — using actual extracted folder '$(basename "$ACTUAL_DIR")' instead"
-            PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
-        else
-            log "[ERROR] Extraction finished but $COMPAT_TOOLS_DIR/$PROTON_DIR_NAME is absent and no new folder appeared"
-            gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$(pe "$COMPAT_TOOLS_DIR")/$(pe "$PROTON_DIR_NAME")</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
+        if [[ $DL_EXIT -ne 0 ]] || [[ ! -s "$TARBALL_TMP" ]]; then
+            log "[ERROR] Proton build download failed (curl exit $DL_EXIT) after ${DL_ELAPSED}s: ${DL_ERR_MSG:-no error output}"
+            rm -f "$TARBALL_TMP"
+            gui_error "❌ Download failed (curl exit $DL_EXIT).\n\nCheck your internet connection and try re-running this setup.\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
         fi
-    fi
+        TARBALL_SIZE_MB=$(du -sm "$TARBALL_TMP" 2>/dev/null | cut -f1)
+        log "Downloaded $TARBALL_NAME successfully (${TARBALL_SIZE_MB:-unknown} MB in ${DL_ELAPSED}s)"
 
-    if ! proton_build_looks_complete "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"; then
-        log "[ERROR] Extraction finished but $PROTON_DIR_NAME is missing expected files (compatibilitytool.vdf, proton launcher, or files/dist) — likely a truncated download or interrupted extraction"
-        gui_error "❌ The Proton build was extracted but looks incomplete.\n\nExpected files weren't found in:\n<tt>$(pe "$COMPAT_TOOLS_DIR")/$(pe "$PROTON_DIR_NAME")</tt>\n\nThis is usually a truncated download. Re-running this setup will remove and re-download it automatically — or paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
-    fi
+        # Snapshot top-level dirs to spot the newly-extracted one even if the
+        # tarball's internal folder name doesn't match its filename.
+        # The tarball knows its own top-level directory, so ask it rather
+        # than inferring one. Falls through to the snapshot diff below if the
+        # listing is unreadable for any reason.
+        TAR_TOPDIR=$(tar -tf "$TARBALL_TMP" 2>/dev/null | head -n1 | cut -d/ -f1)
+        if [[ -n "$TAR_TOPDIR" && "$TAR_TOPDIR" != "$PROTON_DIR_NAME" ]]; then
+            log "Tarball's top-level folder is '$TAR_TOPDIR', not '$PROTON_DIR_NAME' — using the tarball's name"
+            PROTON_DIR_NAME="$TAR_TOPDIR"
+        elif [[ -n "$TAR_TOPDIR" ]]; then
+            log "Tarball top-level folder confirmed as '$TAR_TOPDIR'"
+        fi
 
-    EXTRACTED_SIZE_MB=$(du -sm "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" 2>/dev/null | cut -f1)
-    log "Step 6 complete — custom Proton build installed as $PROTON_DIR_NAME (${EXTRACTED_SIZE_MB:-unknown} MB extracted)"
-    gui_info "<b>Custom Proton build installed!</b>\n\n<tt>$(pe "$PROTON_DIR_NAME")</tt>"
-    SUMMARY_PROTON_BUILD="Installed ($PROTON_DIR_NAME)"
+        DIRS_BEFORE=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+
+        # No --no-same-owner or path-traversal guard: a hostile tarball could
+        # write outside COMPAT_TOOLS_DIR. Same trust boundary as above.
+        (run_redacted "$TECH_LOG" tar -xf "$TARBALL_TMP" -C "$COMPAT_TOOLS_DIR") &
+        TAR_PID=$!
+        gui_wait $TAR_PID "Extracting Proton build...\n\nAlmost done!"
+        wait "$TAR_PID"
+        TAR_EXIT=$?
+        rm -f "$TARBALL_TMP"
+
+        if [[ $TAR_EXIT -ne 0 ]]; then
+            log "[ERROR] tar extraction failed (exit $TAR_EXIT)"
+            gui_error "❌ Extraction failed (tar exit $TAR_EXIT).\n\nCheck the log:\n<tt>$(pe "$TECH_LOG")</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
+        fi
+
+        if [[ ! -d "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" ]]; then
+            DIRS_AFTER=$(find "$COMPAT_TOOLS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+            ACTUAL_DIR=$(comm -13 <(echo "$DIRS_BEFORE") <(echo "$DIRS_AFTER") | head -n1)
+            if [[ -n "$ACTUAL_DIR" ]]; then
+                log "Expected folder name '$PROTON_DIR_NAME' not found after extraction — using actual extracted folder '$(basename "$ACTUAL_DIR")' instead"
+                PROTON_DIR_NAME=$(basename "$ACTUAL_DIR")
+            else
+                log "[ERROR] Extraction finished but $COMPAT_TOOLS_DIR/$PROTON_DIR_NAME is absent and no new folder appeared"
+                gui_error "❌ Extraction finished but the expected folder wasn't there.\n\nExpected: <tt>$(pe "$COMPAT_TOOLS_DIR")/$(pe "$PROTON_DIR_NAME")</tt>\n\nOr paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
+            fi
+        fi
+
+        if ! proton_build_looks_complete "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME"; then
+            log "[ERROR] Extraction finished but $PROTON_DIR_NAME is missing expected files (compatibilitytool.vdf, proton launcher, or files/dist) — likely a truncated download or interrupted extraction"
+            gui_error "❌ The Proton build was extracted but looks incomplete.\n\nExpected files weren't found in:\n<tt>$(pe "$COMPAT_TOOLS_DIR")/$(pe "$PROTON_DIR_NAME")</tt>\n\nThis is usually a truncated download. Re-running this setup will remove and re-download it automatically — or paste this single line into a terminal to do it manually:\n\n<tt>$(pe "$MANUAL_CMD")</tt>"
+        fi
+
+        EXTRACTED_SIZE_MB=$(du -sm "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME" 2>/dev/null | cut -f1)
+        log "Step 6 complete — custom Proton build installed as $PROTON_DIR_NAME (${EXTRACTED_SIZE_MB:-unknown} MB extracted)"
+        gui_info "<b>Custom Proton build installed!</b>\n\n<tt>$(pe "$PROTON_DIR_NAME")</tt>"
+        SUMMARY_PROTON_BUILD="Installed ($PROTON_DIR_NAME)"
     fi
 fi
 
@@ -2471,64 +2469,63 @@ if dry_skip "set iRacing's compatibility tool to $PROTON_DIR_NAME in config.vdf"
     SUMMARY_COMPAT_CONFIG="Auto-configured ($PROTON_DIR_NAME) [dry run]"
 else
 
-# --- Compatibility tool (config.vdf) ---
-if [[ -f "$CONFIG_VDF" ]]; then
-    ctm=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
-    if [[ -n "$ctm" ]]; then
-        read -r _ ctm_start ctm_end <<<"$ctm"
-        cp "$CONFIG_VDF" "$CONFIG_VDF.bak-$BACKUP_TS"
-        log "Backed up config.vdf to config.vdf.bak-$BACKUP_TS"
-        prune_old_backups "$CONFIG_VDF"
+    # --- Compatibility tool (config.vdf) ---
+    if [[ -f "$CONFIG_VDF" ]]; then
+        ctm=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
+        if [[ -n "$ctm" ]]; then
+            read -r _ ctm_start ctm_end <<<"$ctm"
+            cp "$CONFIG_VDF" "$CONFIG_VDF.bak-$BACKUP_TS"
+            log "Backed up config.vdf to config.vdf.bak-$BACKUP_TS"
+            prune_old_backups "$CONFIG_VDF"
 
-        appid_block=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm_start + 1))" "$((ctm_end - 1))" "$IRACING_APPID")
-        if [[ -n "$appid_block" ]]; then
-            read -r _ a_start a_end <<<"$appid_block"
-            OLD_COMPAT_NAME=$(sed -n "$((a_start + 1)),$((a_end - 1))p" "$CONFIG_VDF" | grep '"name"' | sed -E 's/.*"name"[^"]*"([^"]*)".*/\1/')
-            vdf_set_kv "$CONFIG_VDF" "$((a_start + 1))" "$((a_end - 1))" "name" "$PROTON_TOOL_NAME"
-            if [[ "$OLD_COMPAT_NAME" == "$PROTON_TOOL_NAME" ]]; then
-                log "Updated existing CompatToolMapping entry for $IRACING_APPID (unchanged: '$PROTON_TOOL_NAME')"
+            appid_block=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm_start + 1))" "$((ctm_end - 1))" "$IRACING_APPID")
+            if [[ -n "$appid_block" ]]; then
+                read -r _ a_start a_end <<<"$appid_block"
+                OLD_COMPAT_NAME=$(sed -n "$((a_start + 1)),$((a_end - 1))p" "$CONFIG_VDF" | grep '"name"' | sed -E 's/.*"name"[^"]*"([^"]*)".*/\1/')
+                vdf_set_kv "$CONFIG_VDF" "$((a_start + 1))" "$((a_end - 1))" "name" "$PROTON_TOOL_NAME"
+                if [[ "$OLD_COMPAT_NAME" == "$PROTON_TOOL_NAME" ]]; then
+                    log "Updated existing CompatToolMapping entry for $IRACING_APPID (unchanged: '$PROTON_TOOL_NAME')"
+                else
+                    log "Updated existing CompatToolMapping entry for $IRACING_APPID (was: '${OLD_COMPAT_NAME:-<empty>}' -> now: '$PROTON_TOOL_NAME')"
+                fi
             else
-                log "Updated existing CompatToolMapping entry for $IRACING_APPID (was: '${OLD_COMPAT_NAME:-<empty>}' -> now: '$PROTON_TOOL_NAME')"
+                tmp_block=$(mktemp)
+                printf '\t\t\t\t\t"%s"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"%s"\n\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"priority"\t\t"250"\n\t\t\t\t\t}\n' \
+                    "$IRACING_APPID" "$PROTON_TOOL_NAME" >"$tmp_block"
+                sed -i "${ctm_start}r $tmp_block" "$CONFIG_VDF"
+                rm -f "$tmp_block"
+                log "Inserted new CompatToolMapping entry for $IRACING_APPID"
             fi
-        else
-            tmp_block=$(mktemp)
-            printf '\t\t\t\t\t"%s"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"%s"\n\t\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t\t"priority"\t\t"250"\n\t\t\t\t\t}\n' \
-                "$IRACING_APPID" "$PROTON_TOOL_NAME" >"$tmp_block"
-            sed -i "${ctm_start}r $tmp_block" "$CONFIG_VDF"
-            rm -f "$tmp_block"
-            log "Inserted new CompatToolMapping entry for $IRACING_APPID"
-        fi
 
-        verify_ok=false
-        if vdf_brace_balanced "$CONFIG_VDF"; then
-            ctm2=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
-            if [[ -n "$ctm2" ]]; then
-                read -r _ ctm2_start ctm2_end <<<"$ctm2"
-                appid_block2=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm2_start + 1))" "$((ctm2_end - 1))" "$IRACING_APPID")
-                if [[ -n "$appid_block2" ]]; then
-                    read -r _ a2_start a2_end <<<"$appid_block2"
-                    sed -n "${a2_start},${a2_end}p" "$CONFIG_VDF" | grep -qF "\"$PROTON_TOOL_NAME\"" && verify_ok=true
+            verify_ok=false
+            if vdf_brace_balanced "$CONFIG_VDF"; then
+                ctm2=$(vdf_descend "$CONFIG_VDF" "InstallConfigStore" "Software" "Valve" "Steam" "CompatToolMapping" || true)
+                if [[ -n "$ctm2" ]]; then
+                    read -r _ ctm2_start ctm2_end <<<"$ctm2"
+                    appid_block2=$(vdf_find_key_block "$CONFIG_VDF" "$((ctm2_start + 1))" "$((ctm2_end - 1))" "$IRACING_APPID")
+                    if [[ -n "$appid_block2" ]]; then
+                        read -r _ a2_start a2_end <<<"$appid_block2"
+                        sed -n "${a2_start},${a2_end}p" "$CONFIG_VDF" | grep -qF "\"$PROTON_TOOL_NAME\"" && verify_ok=true
+                    fi
                 fi
             fi
-        fi
 
-        if $verify_ok; then
-            SUMMARY_COMPAT_CONFIG="Auto-configured ($PROTON_DISPLAY_NAME)"
-            log "Step 7 — compatibility tool auto-configured to $PROTON_TOOL_NAME (verified)"
+            if $verify_ok; then
+                SUMMARY_COMPAT_CONFIG="Auto-configured ($PROTON_DISPLAY_NAME)"
+                log "Step 7 — compatibility tool auto-configured to $PROTON_TOOL_NAME (verified)"
+            else
+                cp "$CONFIG_VDF.bak-$BACKUP_TS" "$CONFIG_VDF"
+                SUMMARY_COMPAT_CONFIG="Auto-config failed — restored from backup"
+                log "[ERROR] Step 7 — compat tool write verification failed, restored config.vdf from backup"
+            fi
         else
-            cp "$CONFIG_VDF.bak-$BACKUP_TS" "$CONFIG_VDF"
-            SUMMARY_COMPAT_CONFIG="Auto-config failed — restored from backup"
-            log "[ERROR] Step 7 — compat tool write verification failed, restored config.vdf from backup"
+            SUMMARY_COMPAT_CONFIG="Not found — CompatToolMapping section missing"
+            log "Step 7 — CompatToolMapping section not found in config.vdf, skipping automatic edit"
         fi
     else
-        SUMMARY_COMPAT_CONFIG="Not found — CompatToolMapping section missing"
-        log "Step 7 — CompatToolMapping section not found in config.vdf, skipping automatic edit"
+        SUMMARY_COMPAT_CONFIG="Not found — config.vdf missing"
+        log "Step 7 — config.vdf not found at $CONFIG_VDF"
     fi
-else
-    SUMMARY_COMPAT_CONFIG="Not found — config.vdf missing"
-    log "Step 7 — config.vdf not found at $CONFIG_VDF"
-fi
-
 
 fi
 
@@ -2596,82 +2593,82 @@ else
         DRY_PREFIX_SKIPPED=true
         log "Step 8 complete — skipped (dry run)"
     else
-    mkdir -p "$IRACING_COMPATDATA"
+        mkdir -p "$IRACING_COMPATDATA"
 
-    # Some Proton builds refuse to run outside the Steam Linux Runtime
-    # container. Try the plain invocation first (fast, and works for most
-    # builds), then fall back to the runtime entry point if one is
-    # installed. Both attempts get logged so a failure report shows which
-    # path was taken.
-    SLR_ENTRY=""
-    while IFS= read -r slr_lib; do
-        [[ -z "$slr_lib" ]] && continue
-        for slr in SteamLinuxRuntime_sniper SteamLinuxRuntime_soldier; do
-            [[ -x "$slr_lib/steamapps/common/$slr/_v2-entry-point" ]] && {
-                SLR_ENTRY="$slr_lib/steamapps/common/$slr/_v2-entry-point"
-                break 2
-            }
-        done
-    done < <(get_steam_libraries)
-    log "Step 8 — Steam Linux Runtime entry point: ${SLR_ENTRY:-none found}"
+        # Some Proton builds refuse to run outside the Steam Linux Runtime
+        # container. Try the plain invocation first (fast, and works for most
+        # builds), then fall back to the runtime entry point if one is
+        # installed. Both attempts get logged so a failure report shows which
+        # path was taken.
+        SLR_ENTRY=""
+        while IFS= read -r slr_lib; do
+            [[ -z "$slr_lib" ]] && continue
+            for slr in SteamLinuxRuntime_sniper SteamLinuxRuntime_soldier; do
+                [[ -x "$slr_lib/steamapps/common/$slr/_v2-entry-point" ]] && {
+                    SLR_ENTRY="$slr_lib/steamapps/common/$slr/_v2-entry-point"
+                    break 2
+                }
+            done
+        done < <(get_steam_libraries)
+        log "Step 8 — Steam Linux Runtime entry point: ${SLR_ENTRY:-none found}"
 
-    BOOTSTRAP_START_TS=$(date +%s)
-    : >"$PROTON_BOOTSTRAP_LOG"
+        BOOTSTRAP_START_TS=$(date +%s)
+        : >"$PROTON_BOOTSTRAP_LOG"
 
-    # SteamAppId/STEAM_COMPAT_APP_ID are set because Steam always sets
-    # them: without one, protonfixes decides it's running under a unit
-    # test and skips every fix, so this prefix would differ from the one
-    # Steam builds on first launch.
-    # MANGOHUD=0 keeps a globally-enabled overlay out of a headless run —
-    # it has nothing to draw on, and its chatter buries the Proton output
-    # this log exists to capture.
-    (
-        MANGOHUD=0 \
-            SteamAppId="$IRACING_APPID" \
-            STEAM_COMPAT_APP_ID="$IRACING_APPID" \
-            STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
-            STEAM_COMPAT_DATA_PATH="$IRACING_COMPATDATA" \
-            run_redacted "$PROTON_BOOTSTRAP_LOG" "$PROTON_BIN" run cmd /c exit
-    ) &
-    BOOTSTRAP_PID=$!
-    gui_wait $BOOTSTRAP_PID "Preparing the Windows environment for iRacing...\n\nThis is a one-off and takes a minute or two."
-    wait "$BOOTSTRAP_PID"
-    BOOTSTRAP_EXIT=$?
-    log "Step 8 — direct bootstrap finished (exit $BOOTSTRAP_EXIT) after $(($(date +%s) - BOOTSTRAP_START_TS))s"
-
-    if ! prefix_looks_ready && [[ -n "$SLR_ENTRY" ]]; then
-        log "Step 8 — direct bootstrap didn't produce a usable prefix, retrying through $SLR_ENTRY"
+        # SteamAppId/STEAM_COMPAT_APP_ID are set because Steam always sets
+        # them: without one, protonfixes decides it's running under a unit
+        # test and skips every fix, so this prefix would differ from the one
+        # Steam builds on first launch.
+        # MANGOHUD=0 keeps a globally-enabled overlay out of a headless run —
+        # it has nothing to draw on, and its chatter buries the Proton output
+        # this log exists to capture.
         (
             MANGOHUD=0 \
                 SteamAppId="$IRACING_APPID" \
                 STEAM_COMPAT_APP_ID="$IRACING_APPID" \
                 STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
                 STEAM_COMPAT_DATA_PATH="$IRACING_COMPATDATA" \
-                run_redacted "$PROTON_BOOTSTRAP_LOG" "$SLR_ENTRY" --verb=run -- "$PROTON_BIN" run cmd /c exit
+                run_redacted "$PROTON_BOOTSTRAP_LOG" "$PROTON_BIN" run cmd /c exit
         ) &
         BOOTSTRAP_PID=$!
-        gui_wait $BOOTSTRAP_PID "Preparing the Windows environment for iRacing...\n\nTrying again via the Steam Linux Runtime."
+        gui_wait $BOOTSTRAP_PID "Preparing the Windows environment for iRacing...\n\nThis is a one-off and takes a minute or two."
         wait "$BOOTSTRAP_PID"
         BOOTSTRAP_EXIT=$?
-        log "Step 8 — runtime bootstrap finished (exit $BOOTSTRAP_EXIT)"
-    fi
+        log "Step 8 — direct bootstrap finished (exit $BOOTSTRAP_EXIT) after $(($(date +%s) - BOOTSTRAP_START_TS))s"
 
-    BOOTSTRAP_ELAPSED=$(($(date +%s) - BOOTSTRAP_START_TS))
+        if ! prefix_looks_ready && [[ -n "$SLR_ENTRY" ]]; then
+            log "Step 8 — direct bootstrap didn't produce a usable prefix, retrying through $SLR_ENTRY"
+            (
+                MANGOHUD=0 \
+                    SteamAppId="$IRACING_APPID" \
+                    STEAM_COMPAT_APP_ID="$IRACING_APPID" \
+                    STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT" \
+                    STEAM_COMPAT_DATA_PATH="$IRACING_COMPATDATA" \
+                    run_redacted "$PROTON_BOOTSTRAP_LOG" "$SLR_ENTRY" --verb=run -- "$PROTON_BIN" run cmd /c exit
+            ) &
+            BOOTSTRAP_PID=$!
+            gui_wait $BOOTSTRAP_PID "Preparing the Windows environment for iRacing...\n\nTrying again via the Steam Linux Runtime."
+            wait "$BOOTSTRAP_PID"
+            BOOTSTRAP_EXIT=$?
+            log "Step 8 — runtime bootstrap finished (exit $BOOTSTRAP_EXIT)"
+        fi
 
-    # proton returns before wineserver has finished settling, so give the
-    # prefix a few seconds to finish appearing rather than declaring
-    # failure on a single check taken a moment too early.
-    settle=0
-    while ! prefix_looks_ready && [[ $settle -lt 10 ]]; do
-        sleep 1
-        settle=$((settle + 1))
-    done
-    [[ $settle -gt 0 ]] && log "Step 8 — prefix took ${settle}s to settle after proton returned"
+        BOOTSTRAP_ELAPSED=$(($(date +%s) - BOOTSTRAP_START_TS))
 
-    if ! prefix_looks_ready; then
-        log "[ERROR] Step 8 — prefix bootstrap failed after ${BOOTSTRAP_ELAPSED}s, no system32 under $IRACING_COMPATDATA"
-        log "[STATE] compat tool IS assigned ($PROTON_TOOL_NAME) but prefix is NOT created — re-running recovers"
-        gui_error "❌ Couldn't prepare the Windows environment iRacing runs inside.
+        # proton returns before wineserver has finished settling, so give the
+        # prefix a few seconds to finish appearing rather than declaring
+        # failure on a single check taken a moment too early.
+        settle=0
+        while ! prefix_looks_ready && [[ $settle -lt 10 ]]; do
+            sleep 1
+            settle=$((settle + 1))
+        done
+        [[ $settle -gt 0 ]] && log "Step 8 — prefix took ${settle}s to settle after proton returned"
+
+        if ! prefix_looks_ready; then
+            log "[ERROR] Step 8 — prefix bootstrap failed after ${BOOTSTRAP_ELAPSED}s, no system32 under $IRACING_COMPATDATA"
+            log "[STATE] compat tool IS assigned ($PROTON_TOOL_NAME) but prefix is NOT created — re-running recovers"
+            gui_error "❌ Couldn't prepare the Windows environment iRacing runs inside.
 
 Everything after this point needs it, so setup can't continue.
 
@@ -2681,10 +2678,10 @@ Raw output is in:
 You can also try it by hand — paste this single line into a terminal:
 
 <tt>SteamAppId=$IRACING_APPID STEAM_COMPAT_APP_ID=$IRACING_APPID STEAM_COMPAT_CLIENT_INSTALL_PATH=\"$(pe "$STEAM_ROOT")\" STEAM_COMPAT_DATA_PATH=\"$(pe "$IRACING_COMPATDATA")\" \"$(pe "$PROTON_BIN")\" run cmd /c exit</tt>"
-    fi
+        fi
 
-    log "Step 8 complete — prefix bootstrapped at $IRACING_COMPATDATA in ${BOOTSTRAP_ELAPSED}s"
-    SUMMARY_PREFIX="Created (${BOOTSTRAP_ELAPSED}s)"
+        log "Step 8 complete — prefix bootstrapped at $IRACING_COMPATDATA in ${BOOTSTRAP_ELAPSED}s"
+        SUMMARY_PREFIX="Created (${BOOTSTRAP_ELAPSED}s)"
     fi
 fi
 
@@ -2981,7 +2978,6 @@ if ! ${DRY_PREFIX_SKIPPED:-false} && { [[ $LIST_EXIT -ne 0 ]] || [[ -z "$INSTALL
 fi
 rm -f "$PROTONTRICKS_LOG.list"
 
-
 MISSING=()
 for pkg in "${REQUIRED_PKGS[@]}"; do
     if ! echo "$INSTALLED_LIST" | grep -qw "$pkg"; then
@@ -3031,23 +3027,23 @@ Click OK and a progress window will appear."
     if dry_skip "install Proton libraries via protontricks: ${MISSING[*]}"; then
         SUMMARY_PROTON_LIBS="Would install ${#MISSING[@]} libraries [dry run]"
     else
-    PT_START_TS=$(date +%s)
-    : >"$PROTONTRICKS_LOG"
-    run_redacted "$PROTONTRICKS_LOG" protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" &
-    PT_PID=$!
-    gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
-    wait "$PT_PID"
-    PT_EXIT=$?
-    PT_ELAPSED=$(($(date +%s) - PT_START_TS))
+        PT_START_TS=$(date +%s)
+        : >"$PROTONTRICKS_LOG"
+        run_redacted "$PROTONTRICKS_LOG" protontricks "$IRACING_APPID" -q --force "${MISSING[@]}" &
+        PT_PID=$!
+        gui_wait $PT_PID "Installing Proton libraries...\n\nThis can take several minutes, please wait."
+        wait "$PT_PID"
+        PT_EXIT=$?
+        PT_ELAPSED=$(($(date +%s) - PT_START_TS))
 
-    if [[ $PT_EXIT -ne 0 ]]; then
-        log "[ERROR] protontricks force-install failed (exit $PT_EXIT) after ${PT_ELAPSED}s — see $PROTONTRICKS_LOG"
-        gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$(pe "$PROTONTRICKS_LOG")</tt>"
-    fi
+        if [[ $PT_EXIT -ne 0 ]]; then
+            log "[ERROR] protontricks force-install failed (exit $PT_EXIT) after ${PT_ELAPSED}s — see $PROTONTRICKS_LOG"
+            gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$(pe "$PROTONTRICKS_LOG")</tt>"
+        fi
 
-    log "Step 10 complete — ${#MISSING[@]} Proton libraries installed successfully in ${PT_ELAPSED}s"
-    gui_info "<b>All required Proton libraries are now installed.</b>"
-    SUMMARY_PROTON_LIBS="${#MISSING[@]} libraries installed"
+        log "Step 10 complete — ${#MISSING[@]} Proton libraries installed successfully in ${PT_ELAPSED}s"
+        gui_info "<b>All required Proton libraries are now installed.</b>"
+        SUMMARY_PROTON_LIBS="${#MISSING[@]} libraries installed"
     fi
 fi
 
@@ -3228,17 +3224,17 @@ Want to apply this workaround?" "cancel"; then
         if dry_skip "add '$HOSTS_ENTRY' to /etc/hosts"; then
             SUMMARY_EAC="Would apply [dry run]"
         else
-        (echo "$HOSTS_ENTRY" | "${RUN_AS_ROOT[@]}" tee -a /etc/hosts >/dev/null) &
-        gui_wait $! "Applying EAC workaround...\n\nA password prompt window may appear — enter your password there if asked."
-        if grep -qF "$HOSTS_ENTRY" /etc/hosts 2>/dev/null; then
-            log "EAC hosts entry applied and verified"
-            gui_info "EAC workaround applied."
-            SUMMARY_EAC="Applied"
-        else
-            log "[ERROR] EAC hosts write did not land — /etc/hosts has no entry after tee"
-            gui_warn "The EAC workaround didn't get written to /etc/hosts.\n\nAdd this line yourself if you want it:\n\n<tt>$HOSTS_ENTRY</tt>"
-            SUMMARY_EAC="Failed — not written"
-        fi
+            (echo "$HOSTS_ENTRY" | "${RUN_AS_ROOT[@]}" tee -a /etc/hosts >/dev/null) &
+            gui_wait $! "Applying EAC workaround...\n\nA password prompt window may appear — enter your password there if asked."
+            if grep -qF "$HOSTS_ENTRY" /etc/hosts 2>/dev/null; then
+                log "EAC hosts entry applied and verified"
+                gui_info "EAC workaround applied."
+                SUMMARY_EAC="Applied"
+            else
+                log "[ERROR] EAC hosts write did not land — /etc/hosts has no entry after tee"
+                gui_warn "The EAC workaround didn't get written to /etc/hosts.\n\nAdd this line yourself if you want it:\n\n<tt>$HOSTS_ENTRY</tt>"
+                SUMMARY_EAC="Failed — not written"
+            fi
         fi
     else
         log "User declined the EAC workaround"
