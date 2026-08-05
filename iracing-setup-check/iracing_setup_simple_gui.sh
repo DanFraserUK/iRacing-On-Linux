@@ -10,7 +10,7 @@
 # and tag the matching commit (e.g. `git tag v2026.07.24`) — the version
 # is logged as the very first line of every run, so any log a user sends
 # in shows at a glance which revision produced it.
-SCRIPT_VERSION="2026.08.03.15"
+SCRIPT_VERSION="2026.08.05.1"
 SCRIPT_START_TS=$(date +%s)
 
 # --- Arguments ---
@@ -1042,16 +1042,30 @@ check_not_immutable
 # =============================================================================
 check_not_flatpak_snap() {
     local reason=""
+    local evidence=""
 
+    # Only two things prove a sandboxed Steam: the package manager says it is
+    # installed, or the Steam root we resolved is inside a sandbox tree.
+    #
+    # Directory-existence tests were removed. ~/.var/app/com.valvesoftware.Steam
+    # is created by other software (MangoHud writes its config there whether or
+    # not Flatpak Steam exists), so its presence proves nothing and refused
+    # native-Steam users outright.
     if command -v flatpak &>/dev/null && flatpak list --app --columns=application 2>/dev/null | grep -qi "com.valvesoftware.steam"; then
         reason="Flatpak"
-    elif [[ -d "$HOME/.var/app/com.valvesoftware.Steam" ]]; then
-        reason="Flatpak"
+        evidence="flatpak list reports com.valvesoftware.Steam installed"
     elif command -v snap &>/dev/null && snap list 2>/dev/null | grep -qi "^steam "; then
         reason="Snap"
-    elif [[ -d /snap/steam ]]; then
+        evidence="snap list reports steam installed"
+    elif [[ "$STEAM_ROOT" == "$HOME/.var/app/"* ]]; then
+        reason="Flatpak"
+        evidence="resolved STEAM_ROOT is inside the Flatpak sandbox: $STEAM_ROOT"
+    elif [[ "$STEAM_ROOT" == /snap/* || "$STEAM_ROOT" == "$HOME/snap/"* ]]; then
         reason="Snap"
+        evidence="resolved STEAM_ROOT is inside the Snap sandbox: $STEAM_ROOT"
     fi
+
+    log "Sandbox check: ${reason:-none detected} (STEAM_ROOT=$STEAM_ROOT)"
 
     if [[ -n "$reason" ]]; then
         cat <<EOF
@@ -1077,7 +1091,7 @@ check_not_flatpak_snap() {
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
-        log "Blocked: $reason Steam detected"
+        log "Blocked: $reason Steam detected — $evidence"
         exit 1
     fi
 }
