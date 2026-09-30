@@ -10,7 +10,7 @@
 # and tag the matching commit (e.g. `git tag v2026.07.24`) — the version
 # is logged as the very first line of every run, so any log a user sends
 # in shows at a glance which revision produced it.
-SCRIPT_VERSION="2026.08.05.1"
+SCRIPT_VERSION="2026.09.30.1"
 SCRIPT_START_TS=$(date +%s)
 
 # --- Arguments ---
@@ -474,6 +474,30 @@ iracing_compatdata_dir() {
     local acf_dir
     acf_dir=$(dirname "$IRACING_ACF")
     echo "$acf_dir/compatdata/$IRACING_APPID"
+}
+
+# Inno Setup records every install under an Uninstall\...\{AppId}_is1 key,
+# with the install folder in "Inno Setup: App Path". This prints the App
+# Path of any iRacing entry in the prefix's registry, one per line, in
+# Windows form. No output means nothing is registered in this prefix.
+# Read-only - it only ever looks at system.reg.
+iracing_registered_install_paths() {
+    local reg="$1/pfx/system.reg"
+    [[ -f "$reg" ]] || return 0
+    awk '
+        /^\[/ { is_inno = ($0 ~ /_is1\]/); name = ""; path = ""; next }
+        is_inno && /^"DisplayName"=/ { name = $0 }
+        is_inno && /^"Inno Setup: App Path"=/ { path = $0 }
+        is_inno && name != "" && path != "" {
+            if (tolower(name) ~ /iracing/) {
+                sub(/^"Inno Setup: App Path"="/, "", path)
+                sub(/"$/, "", path)
+                gsub(/\\\\/, "\\", path)
+                print path
+            }
+            name = ""; path = ""
+        }
+    ' "$reg"
 }
 
 # A quick sanity check, not an exhaustive file listing. A real iRacing
@@ -2850,6 +2874,33 @@ Click OK to begin."
     INSTALLER_SIZE_MB=$(du -sm "$INSTALLER_EXE" 2>/dev/null | cut -f1)
     log "Step 9 — installer file size: ${INSTALLER_SIZE_MB:-unknown} MB"
 
+    # A leftover iRacing registration in the prefix is the prime suspect
+    # when the installer quits within seconds with exit 1, which Inno
+    # uses for "setup failed to initialise". Record it before launching
+    # so the log has it whether or not the install goes on to fail.
+    local registered_paths registered_note="" reg_path reg_display
+    registered_paths=$(iracing_registered_install_paths "$IRACING_COMPATDATA")
+    if [[ -z "$registered_paths" ]]; then
+        log "Step 9 — pre-flight: no existing iRacing install registered in the prefix"
+    else
+        while IFS= read -r reg_path; do
+            [[ -z "$reg_path" ]] && continue
+            if [[ "${reg_path,,}" == "${IRACING_WIN_PATH,,}" ]]; then
+                log "Step 9 — pre-flight: iRacing already registered in the prefix at the target path: $reg_path"
+            else
+                log "[WARN] Step 9 — pre-flight: iRacing already registered in the prefix at a different path: $reg_path (target: $IRACING_WIN_PATH)"
+                reg_display=$(pe "$reg_path" | sed 's/\\/\&#92;/g')
+                registered_note="${registered_note}
+
+An earlier iRacing install is registered in this prefix at:
+
+    <tt>${reg_display}</tt>
+
+The installer may be refusing to run because of it."
+            fi
+        done <<<"$registered_paths"
+    fi
+
     # Steam has been closed since Step 7 and stays closed to the end of
     # the run, so there's no re-confirmation here any more — running the
     # installer into a prefix Steam still has open risks file-lock
@@ -2859,11 +2910,19 @@ Click OK to begin."
         return 0
     fi
 
+    # Inno's own log says why it stopped, which Wine's output never does -
+    # especially with /SUPPRESSMSGBOXES auto-dismissing any message it
+    # tried to show. Written raw next to the script, then redacted into
+    # $TECH_LOG below so users still only have one file to send.
+    local inno_log_raw="$SCRIPT_DIR/iracing-inno-raw.log"
+    local inno_log_win="Z:${inno_log_raw//\//\\}"
+    rm -f "$inno_log_raw"
+
     log "Launching Windows installer: $INSTALLER_EXE -> $IRACING_STEAM_PATH"
     INSTALL_START_TS=$(date +%s)
     run_redacted "$TECH_LOG" protontricks-launch --appid "$IRACING_APPID" "$INSTALLER_EXE" \
         /SILENT /SUPPRESSMSGBOXES /NORESTART \
-        /DIR="$IRACING_WIN_PATH" &
+        /DIR="$IRACING_WIN_PATH" /LOG="$inno_log_win" &
     INSTALL_PID=$!
 
     gui_wait $INSTALL_PID "Installing iRacing...\n\nDestination:\n<tt>$IRACING_WIN_PATH_DISPLAY</tt>\n\nThis will take a few minutes, please wait."
@@ -2895,6 +2954,24 @@ Click OK to begin."
     fi
     gui_close
 
+    # Done after wineserver -k so nothing in the prefix still has it open.
+    # Inno writes UTF-8 with a BOM and CRLF endings - both stripped.
+    if [[ -s "$inno_log_raw" ]]; then
+        {
+            echo
+            echo "===== Inno Setup log (installer exit $INSTALL_EXIT) ====="
+            sed '1s/^\xEF\xBB\xBF//' "$inno_log_raw" | tr -d '\r' |
+                while IFS= read -r line || [[ -n "$line" ]]; do
+                    redact_path "$line"
+                done
+            echo "===== end of Inno Setup log ====="
+        } >>"$TECH_LOG"
+        rm -f "$inno_log_raw"
+        log "Step 9 — Inno Setup log appended to the technical log"
+    else
+        log "[WARN] Step 9 — installer left no Inno Setup log (it may have stopped before logging started)"
+    fi
+
     gui_open "Verifying iRacing installation..."
     sleep 0.5
     gui_close
@@ -2914,13 +2991,13 @@ Click OK to begin."
         log "[STATE] tool assigned + prefix created, install incomplete at $IRACING_STEAM_PATH — next run classifies this as 'partial'"
         gui_error "iRacing doesn't look like it installed correctly (installer exit code $INSTALL_EXIT).
 
-Expected location: <tt>$(pe "$IRACING_STEAM_PATH")</tt>
+Expected location: <tt>$(pe "$IRACING_STEAM_PATH")</tt>${registered_note}
 
-Please re-run the installer and make sure the install path is set to:
+Running this setup again will retry the install.
+If it fails a second time, please open an issue on GitHub
+and attach both of these log files:
 
-    <tt><b>$IRACING_WIN_PATH_DISPLAY</b></tt>
-
-Raw installer output is in:
+<tt>$(pe "$GENERAL_LOG")</tt>
 <tt>$(pe "$TECH_LOG")</tt>"
     fi
 
