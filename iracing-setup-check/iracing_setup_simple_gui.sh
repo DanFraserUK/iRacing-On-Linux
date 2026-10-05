@@ -131,6 +131,17 @@ PROTON_BOOTSTRAP_LOG="$SCRIPT_DIR/danfrasers-iracing-prefix.log"
 # script's own step-by-step narrative via log(), nothing else, so it
 # stays short and readable when a user sends it over for support.
 TECH_LOG="$SCRIPT_DIR/danfrasers-iracing-technical.log"
+
+# Things worth remembering between runs live here as JSON, so new fields
+# can be added later without breaking older files. Unlike the logs above,
+# this is never wiped at the start of a run.
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/lapzero-iracing"
+STATE_FILE="$STATE_DIR/state.json"
+# The logs above are wiped at the start of every run, so a failure's logs
+# are copied here or they'd be gone by the time anyone asks for them.
+PREFIX_FAILURE_LOGS_DIR="$STATE_DIR/last-prefix-failure"
+# Where users are sent when setup can't fix something on its own.
+HELP_URL="https://github.com/DanFraserUK/iRacing-On-Linux/issues"
 : >"$GENERAL_LOG"
 : >"$TECH_LOG"
 
@@ -476,28 +487,35 @@ iracing_compatdata_dir() {
     echo "$acf_dir/compatdata/$IRACING_APPID"
 }
 
-# Inno Setup records every install under an Uninstall\...\{AppId}_is1 key,
-# with the install folder in "Inno Setup: App Path". This prints the App
-# Path of any iRacing entry in the prefix's registry, one per line, in
-# Windows form. No output means nothing is registered in this prefix.
+# Inno Setup records every install under an Uninstall\...\{AppId}_is1 key.
+# This prints one string value (e.g. "Inno Setup: App Path" or
+# "DisplayVersion") from any iRacing entry in the prefix's registry, one
+# per line, with the registry's doubled backslashes undone. No output
+# means nothing is registered, or the entry doesn't have that value.
 # Read-only - it only ever looks at system.reg.
-iracing_registered_install_paths() {
+iracing_registered_field() {
     local reg="$1/pfx/system.reg"
     [[ -f "$reg" ]] || return 0
-    awk '
-        /^\[/ { is_inno = ($0 ~ /_is1\]/); name = ""; path = ""; next }
-        is_inno && /^"DisplayName"=/ { name = $0 }
-        is_inno && /^"Inno Setup: App Path"=/ { path = $0 }
-        is_inno && name != "" && path != "" {
-            if (tolower(name) ~ /iracing/) {
-                sub(/^"Inno Setup: App Path"="/, "", path)
-                sub(/"$/, "", path)
-                gsub(/\\\\/, "\\", path)
-                print path
-            }
-            name = ""; path = ""
+    awk -v want="$2" '
+        function flush() {
+            if (is_inno && have && tolower(name) ~ /iracing/) print val
+            name = ""; val = ""; have = 0
         }
+        /^\[/ { flush(); is_inno = ($0 ~ /_is1\]/); next }
+        is_inno && index($0, "\"DisplayName\"=") == 1 { name = $0 }
+        is_inno && index($0, "\"" want "\"=\"") == 1 {
+            val = substr($0, length(want) + 5)
+            sub(/"$/, "", val)
+            gsub(/\\\\/, "\\", val)
+            have = 1
+        }
+        END { flush() }
     ' "$reg"
+}
+
+# The install folder of any iRacing entry, in Windows form.
+iracing_registered_install_paths() {
+    iracing_registered_field "$1" "Inno Setup: App Path"
 }
 
 # A quick sanity check, not an exhaustive file listing. A real iRacing
@@ -793,6 +811,171 @@ gui_question() {
         --width=500 \
         --no-wrap \
         "${extra_flag[@]}" 2>/dev/null
+}
+
+# --- Saved state (state.json) ---
+# python3 does the JSON, since protontricks is a Python app and so it's
+# always there by the time anything here runs. If it somehow isn't, the
+# state features switch themselves off and the run carries on without them.
+# Unknown fields are kept as they are, so older and newer versions of this
+# script can share the one file.
+STATE_PY=$(
+    cat <<'PY'
+import json, os, sys, tempfile
+path, op, key = sys.argv[1:4]
+keys = key.split(".")
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError("not an object")
+except FileNotFoundError:
+    data = {}
+except (ValueError, OSError):
+    if op == "get":
+        sys.exit(1)
+    # Unreadable file: keep it for a look later and start a new one.
+    try:
+        os.replace(path, path + ".unreadable")
+    except OSError:
+        pass
+    data = {}
+if op == "get":
+    cur = data
+    for k in keys:
+        if not isinstance(cur, dict) or cur.get(k) is None:
+            sys.exit(1)
+        cur = cur[k]
+    print(cur if isinstance(cur, str) else json.dumps(cur))
+    sys.exit(0)
+data.setdefault("schema", 1)
+cur = data
+for k in keys[:-1]:
+    if not isinstance(cur.get(k), dict):
+        cur[k] = {}
+    cur = cur[k]
+if op == "del":
+    cur.pop(keys[-1], None)
+else:
+    kind, value = sys.argv[4], sys.argv[5]
+    cur[keys[-1]] = {"str": str, "int": int, "bool": lambda v: v == "true"}[kind](value)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".state-")
+with os.fdopen(fd, "w") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, path)
+PY
+)
+
+state_available() { command -v python3 &>/dev/null; }
+
+# state_get prefix.last_failure.step -> prints the value, returns 1 if unset
+state_get() {
+    state_available && [[ -f "$STATE_FILE" ]] || return 1
+    python3 -c "$STATE_PY" "$STATE_FILE" get "$1" 2>/dev/null
+}
+
+# state_set prefix.last_failure.step str 9   (types: str, int, bool)
+state_set() {
+    if ! state_available; then
+        log "[WARN] python3 not found, can't save $1 to $STATE_FILE"
+        return 1
+    fi
+    python3 -c "$STATE_PY" "$STATE_FILE" set "$1" "$2" "$3" 2>>"$TECH_LOG" || {
+        log "[WARN] couldn't save $1 to $STATE_FILE"
+        return 1
+    }
+}
+
+state_del() {
+    state_available && [[ -f "$STATE_FILE" ]] || return 0
+    python3 -c "$STATE_PY" "$STATE_FILE" del "$1" 2>>"$TECH_LOG" ||
+        log "[WARN] couldn't remove $1 from $STATE_FILE"
+}
+
+# --- Prefix failures ---
+# A failure that a fresh prefix might fix gets recorded, and the next run
+# offers to move the prefix aside and build a new one. Errors that blame
+# the Proton build itself don't go through here - a new prefix built by
+# the same broken build won't fix those.
+#
+# Loop guard: a prefix built by that reset is marked as such until a run
+# gets all the way through Step 10. If it fails too, nobody is offered
+# another reset - they're told to ask for help instead.
+PREFIX_FAILURE_NOTE=""
+
+record_prefix_failure() {
+    local step="$1" reason="$2" on_reset=false reset_for
+    PREFIX_FAILURE_NOTE=""
+    if $DRY_RUN; then
+        log "[DRY-RUN] would record a prefix failure at Step $step: $reason"
+        return 0
+    fi
+
+    reset_for=$(state_get prefix.reset.compatdata) &&
+        [[ "$reset_for" == "$IRACING_COMPATDATA" ]] && on_reset=true
+
+    state_set prefix.last_failure.compatdata str "$IRACING_COMPATDATA" &&
+        state_set prefix.last_failure.step str "$step" &&
+        state_set prefix.last_failure.reason str "$reason" &&
+        state_set prefix.last_failure.when str "$(date -Iseconds)" &&
+        state_set prefix.last_failure.script_version str "$SCRIPT_VERSION" &&
+        state_set prefix.last_failure.on_reset_prefix bool "$on_reset" || {
+        # Without a record, the next run can't offer anything, so don't
+        # promise that it will.
+        log "[WARN] prefix failure at Step $step could not be recorded"
+        return 0
+    }
+    log "Recorded prefix failure at Step $step in $STATE_FILE (prefix built by a reset: $on_reset)"
+
+    if $on_reset; then
+        PREFIX_FAILURE_NOTE="
+
+<b>This needs someone to take a look</b>
+This happened on a freshly rebuilt Windows environment, so running
+setup again won't fix it on its own.  Please open an issue here:
+<tt>$(pe "$HELP_URL")</tt>
+and attach the logs in:
+<tt>$(pe "$PREFIX_FAILURE_LOGS_DIR")</tt>"
+    else
+        PREFIX_FAILURE_NOTE="
+
+<b>What to do next</b>
+Run this setup again.  It will offer to rebuild the Windows
+environment iRacing runs in, which often fixes this.
+Your current one will be kept as a backup."
+    fi
+}
+
+# Copies this run's logs somewhere the next run won't wipe. Only logs
+# written during this run, so a stale protontricks log from weeks ago
+# doesn't get passed off as part of this failure.
+save_prefix_failure_logs() {
+    $DRY_RUN && return 0
+    rm -rf -- "$PREFIX_FAILURE_LOGS_DIR"
+    mkdir -p "$PREFIX_FAILURE_LOGS_DIR" || return 0
+    local f
+    for f in "$GENERAL_LOG" "$TECH_LOG" "$PROTONTRICKS_LOG" "$PROTON_BOOTSTRAP_LOG"; do
+        [[ -s "$f" && $(stat -c %Y "$f" 2>/dev/null || echo 0) -ge $SCRIPT_START_TS ]] &&
+            cp -f -- "$f" "$PREFIX_FAILURE_LOGS_DIR/"
+    done
+}
+
+# gui_error for failures a fresh prefix might fix: records the failure,
+# adds the plain-English "what next" note, and saves the logs.
+gui_prefix_error() {
+    local step="$1" reason="$2" msg="$3"
+    record_prefix_failure "$step" "$reason"
+    sleep 0.3
+    zenity --error \
+        --title="$TITLE" \
+        --text="${msg}${PREFIX_FAILURE_NOTE}" \
+        --width=500 \
+        --no-wrap 2>/dev/null
+    log "[ERROR] $msg"
+    save_prefix_failure_logs
+    exit 1
 }
 
 # Show a pulsing "please wait" progress window while a background PID runs.
@@ -2619,6 +2802,156 @@ if [[ ! -x "$PROTON_BIN" ]]; then
     gui_error "❌ The Proton build's launcher is missing or not executable:\n\n<tt>$(pe "$PROTON_BIN")</tt>\n\nDelete <tt>$(pe "$COMPAT_TOOLS_DIR")/$(pe "$PROTON_DIR_NAME")</tt> and re-run this setup so it can be freshly downloaded."
 fi
 
+find_wineserver_bin() {
+    local d
+    for d in files dist; do
+        [[ -x "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME/$d/bin/wineserver" ]] && {
+            echo "$COMPAT_TOOLS_DIR/$PROTON_DIR_NAME/$d/bin/wineserver"
+            return 0
+        }
+    done
+    return 1
+}
+
+# Keeps the newest $1 renamed prefixes, same idea as prune_old_backups.
+# Sorted on the timestamp in the name, not mtime - a renamed folder keeps
+# its old mtime, so mtime order is "last used", not "last backed up".
+prune_old_prefixes() {
+    local keep="${1:-2}" old
+    printf '%s\n' "$IRACING_COMPATDATA".old-* | sort -r | tail -n +$((keep + 1)) |
+        while IFS= read -r old; do
+            [[ -d "$old" && "$old" == "$IRACING_COMPATDATA".old-* ]] || continue
+            rm -rf -- "$old" && log "Pruned old prefix: $(basename "$old")"
+        done
+}
+
+# If the last run recorded a prefix failure, offer to move this prefix
+# aside so the bootstrap below builds a fresh one - or, if this prefix was
+# itself built by a reset, tell the user to ask for help instead.
+# Steam has been closed since Step 7, so nothing should have it open.
+PREFIX_WAS_RESET=false
+check_prefix_failure_record() {
+    local fail_for step reason on_reset
+    if ! state_available; then
+        log "Step 8 — python3 not found, skipping the prefix failure check"
+        return 0
+    fi
+    fail_for=$(state_get prefix.last_failure.compatdata) || {
+        log "Step 8 — no earlier prefix failure on record"
+        return 0
+    }
+    if [[ "$fail_for" != "$IRACING_COMPATDATA" ]]; then
+        log "Step 8 — earlier prefix failure was for $fail_for, not this prefix, clearing it"
+        dry_skip "clear the prefix failure record" || state_del prefix.last_failure
+        return 0
+    fi
+    step=$(state_get prefix.last_failure.step)
+    reason=$(state_get prefix.last_failure.reason)
+    on_reset=$(state_get prefix.last_failure.on_reset_prefix)
+    log "Step 8 — earlier prefix failure on record: Step $step, $reason (prefix built by a reset: ${on_reset:-unknown})"
+
+    # Removed by hand since the failure - the bootstrap below builds a
+    # fresh one either way, so count it as the reset for the loop guard.
+    if [[ ! -d "$IRACING_COMPATDATA" ]]; then
+        log "Step 8 — prefix folder has gone since that failure, treating its removal as a reset"
+        if ! dry_skip "mark the next prefix as built by a reset"; then
+            state_del prefix.last_failure
+            state_set prefix.reset.compatdata str "$IRACING_COMPATDATA"
+            state_set prefix.reset.when str "$(date -Iseconds)"
+            state_set prefix.reset.moved_to str "removed outside setup"
+        fi
+        PREFIX_WAS_RESET=true
+        return 0
+    fi
+
+    if [[ "$on_reset" == "true" ]]; then
+        log "[WARN] Step 8 — a prefix built by a reset failed too, showing the ask-for-help page"
+        if zenity --question \
+            --title="$TITLE" \
+            --width=500 \
+            --no-wrap \
+            --ok-label="Close setup" \
+            --cancel-label="Run setup anyway" \
+            --text="<b>Setup needs a hand from someone</b>
+
+Last time, setup stopped at Step $(pe "$step"):
+<i>$(pe "$reason")</i>
+
+That was on a freshly rebuilt Windows environment, so rebuilding
+it again won't fix this.  Something else is going on.
+
+Please ask for help by opening an issue here:
+
+<tt>$(pe "$HELP_URL")</tt>
+
+and attach the log files in:
+
+<tt>$(pe "$PREFIX_FAILURE_LOGS_DIR")</tt>
+
+You can run setup anyway, but it will most likely stop
+in the same place." 2>/dev/null; then
+            log "User closed setup at the ask-for-help page"
+            exit 0
+        fi
+        log "User chose to run setup anyway after the ask-for-help page, clearing the failure record"
+        dry_skip "clear the prefix failure record" || state_del prefix.last_failure
+        return 0
+    fi
+
+    local moved
+    moved="$IRACING_COMPATDATA.old-$(date +%Y%m%d-%H%M%S)"
+    if ! zenity --question \
+        --title="$TITLE" \
+        --width=500 \
+        --no-wrap \
+        --ok-label="Start fresh" \
+        --cancel-label="Keep the current one" \
+        --text="<b>Last time, setup hit a problem</b>
+
+It stopped at Step $(pe "$step"):
+<i>$(pe "$reason")</i>
+
+Problems like this are often fixed by starting again with a fresh
+copy of the Windows environment iRacing runs in (the \"prefix\").
+
+If you start fresh:
+  •  your current one is kept as a backup, renamed to
+     <tt>$(pe "$(basename "$moved")")</tt>
+  •  a new one is built, and setup carries on as normal
+
+Start fresh?" 2>/dev/null; then
+        log "User kept the current prefix, failure stays on record"
+        return 0
+    fi
+
+    log "User chose to start fresh, moving prefix to $moved"
+    if dry_skip "move the prefix to $moved and build a fresh one"; then
+        return 0
+    fi
+    local ws
+    if ws=$(find_wineserver_bin); then
+        WINEPREFIX="$IRACING_COMPATDATA/pfx" run_redacted "$TECH_LOG" "$ws" -k || true
+        sleep 2
+    fi
+    if ! mv -- "$IRACING_COMPATDATA" "$moved"; then
+        log "[ERROR] Step 8 — couldn't move $IRACING_COMPATDATA to $moved"
+        gui_error "❌ Couldn't move the old Windows environment out of the way.
+
+It's here:
+<tt>$(pe "$IRACING_COMPATDATA")</tt>
+
+Make sure Steam and iRacing are fully closed, then run setup again."
+    fi
+    log "Step 8 — prefix moved to $moved"
+    prune_old_prefixes 2
+    state_del prefix.last_failure
+    state_set prefix.reset.compatdata str "$IRACING_COMPATDATA"
+    state_set prefix.reset.when str "$(date -Iseconds)"
+    state_set prefix.reset.moved_to str "$moved"
+    PREFIX_WAS_RESET=true
+}
+check_prefix_failure_record
+
 if prefix_looks_ready; then
     log "Step 8 complete — prefix already present at $IRACING_COMPATDATA, skipping bootstrap"
     SUMMARY_PREFIX="Already present"
@@ -2706,7 +3039,7 @@ else
         if ! prefix_looks_ready; then
             log "[ERROR] Step 8 — prefix bootstrap failed after ${BOOTSTRAP_ELAPSED}s, no system32 under $IRACING_COMPATDATA"
             log "[STATE] compat tool IS assigned ($PROTON_TOOL_NAME) but prefix is NOT created — re-running recovers"
-            gui_error "❌ Couldn't prepare the Windows environment iRacing runs inside.
+            gui_prefix_error 8 "the Windows environment couldn't be created" "❌ Couldn't prepare the Windows environment iRacing runs inside.
 
 Everything after this point needs it, so setup can't continue.
 
@@ -2720,6 +3053,7 @@ You can also try it by hand — paste this single line into a terminal:
 
         log "Step 8 complete — prefix bootstrapped at $IRACING_COMPATDATA in ${BOOTSTRAP_ELAPSED}s"
         SUMMARY_PREFIX="Created (${BOOTSTRAP_ELAPSED}s)"
+        $PREFIX_WAS_RESET && SUMMARY_PREFIX="Rebuilt (${BOOTSTRAP_ELAPSED}s), old one kept"
     fi
 fi
 
@@ -2859,6 +3193,23 @@ Click OK when the download has started."
 
     log "Installer found after $installer_wait_attempt polling pass(es), size stable at $INSTALLER_SIZE_B bytes"
 
+    # There's no way to ask iRacing for the live build without a login,
+    # so record how old the installer is instead. An old installer means
+    # the launcher has catching up to do on first run, which is the usual
+    # story behind "version mismatch" on the first few launches.
+    local installer_build installer_dl_days
+    installer_build=$(basename "$INSTALLER_EXE")
+    installer_build="${installer_build#iRacingInstaller_win_}"
+    installer_build="${installer_build%.exe}"
+    installer_dl_days=$((($(date +%s) - $(stat -c %Y "$INSTALLER_EXE" 2>/dev/null || date +%s)) / 86400))
+    if [[ "$installer_build" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})\.[0-9]+$ ]]; then
+        local build_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}" build_days
+        build_days=$((($(date +%s) - $(date -d "$build_date" +%s 2>/dev/null || date +%s)) / 86400))
+        log "Step 9 — installer build $installer_build (built $build_date, $build_days days ago), downloaded $installer_dl_days days ago"
+    else
+        log "Step 9 — installer build not recognised from filename ($installer_build), downloaded $installer_dl_days days ago"
+    fi
+
     gui_info "Found installer: <tt>$(basename "$INSTALLER_EXE")</tt>
 
 The installer will now run on its own and install iRacing to the
@@ -2989,14 +3340,11 @@ The installer may be refusing to run because of it."
     if ! iracing_fingerprint_complete "$IRACING_STEAM_PATH" verbose installer; then
         log "[ERROR] Step 9 — post-install fingerprint check failed (installer exit $INSTALL_EXIT)"
         log "[STATE] tool assigned + prefix created, install incomplete at $IRACING_STEAM_PATH — next run classifies this as 'partial'"
-        gui_error "iRacing doesn't look like it installed correctly (installer exit code $INSTALL_EXIT).
+        gui_prefix_error 9 "the iRacing installer didn't finish (exit code $INSTALL_EXIT)" "iRacing doesn't look like it installed correctly (installer exit code $INSTALL_EXIT).
 
 Expected location: <tt>$(pe "$IRACING_STEAM_PATH")</tt>${registered_note}
 
-Running this setup again will retry the install.
-If it fails a second time, please open an issue on GitHub
-and attach both of these log files:
-
+Log files:
 <tt>$(pe "$GENERAL_LOG")</tt>
 <tt>$(pe "$TECH_LOG")</tt>"
     fi
@@ -3004,6 +3352,9 @@ and attach both of these log files:
     IRACING_INSTALLED_SIZE_MB=$(du -sm "$IRACING_STEAM_PATH" 2>/dev/null | cut -f1)
     log "Step 9 complete — install verified at $IRACING_STEAM_PATH"
     log "Step 9 — final install size: ${IRACING_INSTALLED_SIZE_MB:-unknown} MB"
+    local installed_version
+    installed_version=$(iracing_registered_field "$IRACING_COMPATDATA" DisplayVersion | head -n1)
+    log "Step 9 — version the installer registered: ${installed_version:-not found} (installer build $installer_build)"
     gui_info "<b>iRacing installation confirmed!</b>\n\nLocation: <tt>$(pe "$IRACING_STEAM_PATH")</tt>"
     if [[ "$entry_reason" == "repair" ]]; then
         SUMMARY_IRACING_FILES="Repaired via Windows installer"
@@ -3129,12 +3480,26 @@ Click OK and a progress window will appear."
 
         if [[ $PT_EXIT -ne 0 ]]; then
             log "[ERROR] protontricks force-install failed (exit $PT_EXIT) after ${PT_ELAPSED}s — see $PROTONTRICKS_LOG"
-            gui_error "❌ protontricks hit an error (code $PT_EXIT).\n\nCheck the log for details:\n<tt>$(pe "$PROTONTRICKS_LOG")</tt>"
+            gui_prefix_error 10 "installing the Windows libraries iRacing needs failed (code $PT_EXIT)" "❌ protontricks hit an error (code $PT_EXIT).
+
+Check the log for details:
+<tt>$(pe "$PROTONTRICKS_LOG")</tt>"
         fi
 
         log "Step 10 complete — ${#MISSING[@]} Proton libraries installed successfully in ${PT_ELAPSED}s"
         gui_info "<b>All required Proton libraries are now installed.</b>"
         SUMMARY_PROTON_LIBS="${#MISSING[@]} libraries installed"
+    fi
+fi
+
+# Steps 8 to 10 all passed, so this prefix is good. Clear any failure on
+# record, and the reset mark too, so a later failure is offered a reset
+# again rather than going straight to the ask-for-help page.
+if ! dry_skip "clear the prefix failure and reset records"; then
+    if state_get prefix.last_failure.step >/dev/null || state_get prefix.reset.when >/dev/null; then
+        state_del prefix.last_failure
+        state_del prefix.reset
+        log "Steps 8 to 10 passed, cleared the prefix failure and reset records"
     fi
 fi
 
