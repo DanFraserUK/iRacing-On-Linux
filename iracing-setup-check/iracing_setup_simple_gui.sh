@@ -10,7 +10,7 @@
 # and tag the matching commit (e.g. `git tag v2026.07.24`) — the version
 # is logged as the very first line of every run, so any log a user sends
 # in shows at a glance which revision produced it.
-SCRIPT_VERSION="2026.09.30.1"
+SCRIPT_VERSION="2026.10.06.1"
 SCRIPT_START_TS=$(date +%s)
 
 # --- Arguments ---
