@@ -10,7 +10,7 @@
 # and tag the matching commit (e.g. `git tag v2026.07.24`) — the version
 # is logged as the very first line of every run, so any log a user sends
 # in shows at a glance which revision produced it.
-SCRIPT_VERSION="2026.10.05.1"
+SCRIPT_VERSION="2026.10.06"
 SCRIPT_START_TS=$(date +%s)
 
 # --- Arguments ---
@@ -198,6 +198,7 @@ SUMMARY_PROTON_BUILD=""
 SUMMARY_PREFIX=""
 SUMMARY_EAC=""
 SUMMARY_DOCS=""
+SUMMARY_KWIN_RULE=""
 
 # =============================================================================
 # HELPERS
@@ -3765,7 +3766,146 @@ else
     SUMMARY_DOCS="Not yet - launch iRacing first"
 fi
 
-log "Step 12 complete — EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
+# --- KDE Plasma dropdown fix (KWin window rule) ---
+# iRacing's UI dropdowns (Car, Track, Display etc.) open as their own
+# untitled window. Wine hands that window to KWin with no link back to
+# the main UI window, so KWin stacks it behind the UI. It is drawn, just
+# hidden. Confirmed with xwininfo, an import of the window contents, and
+# a KWin script dump of the stacking order. A rule that keeps untitled
+# iRacing windows above fixes it. The main UI and sim windows have
+# titles, so they aren't touched.
+# The rule uses a fixed group ID so a re-run finds its own rule rather
+# than adding a second copy.
+KWIN_RULE_ID="19433250-172d-4b09-80bf-9189d6d5bb70"
+KWIN_RULE_NAME="iRacing dropdown menus"
+KWIN_RULES_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/kwinrulesrc"
+SUMMARY_KWIN_RULE="Not attempted"
+
+KWRITECONFIG=""
+KREADCONFIG=""
+for v in 6 5; do
+    if command -v "kwriteconfig$v" &>/dev/null && command -v "kreadconfig$v" &>/dev/null; then
+        KWRITECONFIG="kwriteconfig$v"
+        KREADCONFIG="kreadconfig$v"
+        break
+    fi
+done
+
+kwin_rule_get() { "$KREADCONFIG" --file kwinrulesrc --group "$1" --key "$2" 2>/dev/null; }
+kwin_rule_set() { "$KWRITECONFIG" --file kwinrulesrc --group "$1" --key "$2" "${@:3}"; }
+
+# Writes every key of the rule. Safe to run over an existing copy.
+kwin_rule_write_keys() {
+    kwin_rule_set "$KWIN_RULE_ID" Description "$KWIN_RULE_NAME" &&
+        kwin_rule_set "$KWIN_RULE_ID" wmclass "steam_app_$IRACING_APPID" &&
+        kwin_rule_set "$KWIN_RULE_ID" wmclassmatch 1 &&
+        kwin_rule_set "$KWIN_RULE_ID" title '^$' &&
+        kwin_rule_set "$KWIN_RULE_ID" titlematch 3 &&
+        kwin_rule_set "$KWIN_RULE_ID" types 1 &&
+        kwin_rule_set "$KWIN_RULE_ID" keepabove --type bool true &&
+        kwin_rule_set "$KWIN_RULE_ID" keepaboverule 2
+}
+# Values: wmclassmatch 1 = exact, titlematch 3 = regular expression,
+# types 1 = Normal Window, keepaboverule 2 = Force.
+
+kwin_rule_verify() {
+    [[ "$(kwin_rule_get "$KWIN_RULE_ID" wmclass)" == "steam_app_$IRACING_APPID" ]] &&
+        [[ "$(kwin_rule_get "$KWIN_RULE_ID" title)" == '^$' ]] &&
+        [[ "$(kwin_rule_get "$KWIN_RULE_ID" keepaboverule)" == "2" ]] &&
+        [[ ",$(kwin_rule_get General rules)," == *",$KWIN_RULE_ID,"* ]]
+}
+
+kwin_reconfigure() {
+    if command -v dbus-send &>/dev/null &&
+        dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure &>/dev/null; then
+        log "KWin told to reload its rules"
+        return 0
+    fi
+    log "[WARN] Couldn't ask KWin to reload its rules. The rule takes effect after the next login."
+    return 1
+}
+
+if [[ "${XDG_CURRENT_DESKTOP:-}" != *KDE* && -z "${KDE_SESSION_VERSION:-}" ]]; then
+    log "Desktop is '${XDG_CURRENT_DESKTOP:-unknown}', not KDE Plasma. Dropdown fix not needed."
+    SUMMARY_KWIN_RULE="Not needed (not KDE Plasma)"
+elif [[ -z "$KWRITECONFIG" ]]; then
+    log "[WARN] KDE Plasma detected but no kwriteconfig6/kreadconfig6 (or 5) found. Can't add the dropdown rule."
+    gui_warn "Couldn't apply the KDE dropdown fix.
+
+The dropdowns still work with the up and down arrow keys."
+    SUMMARY_KWIN_RULE="Skipped (kwriteconfig not found)"
+else
+    KWIN_EXISTING_RULES=$(kwin_rule_get General rules)
+    KWIN_EXISTING_COUNT=$(kwin_rule_get General count)
+    log "KDE Plasma detected ($KWRITECONFIG). kwinrulesrc rules='${KWIN_EXISTING_RULES}' count='${KWIN_EXISTING_COUNT}'"
+
+    if [[ -z "$KWIN_EXISTING_RULES" && "${KWIN_EXISTING_COUNT:-0}" =~ ^[1-9][0-9]*$ ]]; then
+        # Very old numbered-group format. Writing a rules= list would hide
+        # those existing rules from KWin, so leave the file alone.
+        log "[WARN] kwinrulesrc uses the old numbered format (count=$KWIN_EXISTING_COUNT, no rules list). Not editing it."
+        gui_warn "Couldn't apply the KDE dropdown fix.
+
+The dropdowns still work with the up and down arrow keys."
+        SUMMARY_KWIN_RULE="Skipped (old kwinrulesrc format)"
+    elif kwin_rule_verify; then
+        log "Dropdown rule already present in kwinrulesrc"
+        SUMMARY_KWIN_RULE="Already applied"
+    else
+        gui_info "Applying the KDE fix so iRacing's dropdown menus show correctly."
+
+        if dry_skip "add the '$KWIN_RULE_NAME' KWin rule ($KWIN_RULE_ID) to $KWIN_RULES_FILE"; then
+            SUMMARY_KWIN_RULE="Would apply [dry run]"
+        else
+            KWIN_FILE_EXISTED=false
+            if [[ -f "$KWIN_RULES_FILE" ]]; then
+                KWIN_FILE_EXISTED=true
+                KWIN_BACKUP="$KWIN_RULES_FILE.bak-$(date '+%Y%m%d-%H%M%S')"
+                cp "$KWIN_RULES_FILE" "$KWIN_BACKUP"
+                log "Backed up kwinrulesrc to $(basename "$KWIN_BACKUP")"
+                prune_old_backups "$KWIN_RULES_FILE"
+            fi
+
+            # Add our ID to the rules list if it isn't there, and keep
+            # count in step with the list.
+            if [[ ",$KWIN_EXISTING_RULES," == *",$KWIN_RULE_ID,"* ]]; then
+                KWIN_NEW_RULES="$KWIN_EXISTING_RULES"
+            elif [[ -z "$KWIN_EXISTING_RULES" ]]; then
+                KWIN_NEW_RULES="$KWIN_RULE_ID"
+            else
+                KWIN_NEW_RULES="$KWIN_EXISTING_RULES,$KWIN_RULE_ID"
+            fi
+            KWIN_NEW_COUNT=$(awk -F, '{print NF}' <<<"$KWIN_NEW_RULES")
+
+            if kwin_rule_write_keys &&
+                kwin_rule_set General rules "$KWIN_NEW_RULES" &&
+                kwin_rule_set General count "$KWIN_NEW_COUNT" &&
+                kwin_rule_verify; then
+                log "Dropdown rule written and verified (rules list now has $KWIN_NEW_COUNT entries)"
+                if kwin_reconfigure; then
+                    SUMMARY_KWIN_RULE="Applied"
+                    gui_info "Dropdown fix applied."
+                else
+                    SUMMARY_KWIN_RULE="Applied (active after next login)"
+                    gui_info "Dropdown fix added.\n\nKDE couldn't be told to reload it, so it will start working after you next log in."
+                fi
+            else
+                if $KWIN_FILE_EXISTED; then
+                    cp "$KWIN_BACKUP" "$KWIN_RULES_FILE"
+                    log "[ERROR] Dropdown rule write or verify failed. Restored kwinrulesrc from backup."
+                else
+                    rm -f "$KWIN_RULES_FILE"
+                    log "[ERROR] Dropdown rule write or verify failed. Removed the new kwinrulesrc (there wasn't one before)."
+                fi
+                gui_warn "Couldn't apply the KDE dropdown fix.
+
+The dropdowns still work with the up and down arrow keys."
+                SUMMARY_KWIN_RULE="Failed (restored from backup)"
+            fi
+        fi
+    fi
+fi
+
+log "Step 12 complete — EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS | KDE dropdown fix: $SUMMARY_KWIN_RULE"
 
 # =============================================================================
 # DONE — Summary screen then final instructions
@@ -3785,9 +3925,10 @@ SUMMARY_TEXT="<b>Setup Summary</b>
 <tt>Launch options        </tt>${SUMMARY_LAUNCH_OPTIONS}
 <tt>EAC workaround        </tt>${SUMMARY_EAC}
 <tt>Documents shortcut    </tt>${SUMMARY_DOCS}
+<tt>KDE dropdown fix      </tt>${SUMMARY_KWIN_RULE}
 <tt>─────────────────────────────────────────────────────</tt>"
 
-log "Setup summary — packages: $SUMMARY_PACKAGES | login: $SUMMARY_LOGIN | type: $SUMMARY_IRACING_TYPE | files: $SUMMARY_IRACING_FILES | proton libs: $SUMMARY_PROTON_LIBS | proton build: $SUMMARY_PROTON_BUILD | prefix: $SUMMARY_PREFIX | compat config: $SUMMARY_COMPAT_CONFIG | launch options: $SUMMARY_LAUNCH_OPTIONS | EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS"
+log "Setup summary — packages: $SUMMARY_PACKAGES | login: $SUMMARY_LOGIN | type: $SUMMARY_IRACING_TYPE | files: $SUMMARY_IRACING_FILES | proton libs: $SUMMARY_PROTON_LIBS | proton build: $SUMMARY_PROTON_BUILD | prefix: $SUMMARY_PREFIX | compat config: $SUMMARY_COMPAT_CONFIG | launch options: $SUMMARY_LAUNCH_OPTIONS | EAC: $SUMMARY_EAC | docs shortcut: $SUMMARY_DOCS | KDE dropdown fix: $SUMMARY_KWIN_RULE"
 gui_info "$SUMMARY_TEXT"
 
 # Only the launch options can still be outstanding here: Step 7 exits on
